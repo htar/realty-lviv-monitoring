@@ -1,4 +1,4 @@
-import pino from "pino";
+import { createLogger } from "./logger.js";
 import { TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import { NewMessage, EditedMessage } from "teleproto/events/index.js";
@@ -7,11 +7,20 @@ import { parseListing, matchesSearch } from "./parser.js";
 import { Store } from "./database.js";
 import { TelegramBot } from "./bot.js";
 import { scanHistory } from "./history.js";
+import { acquireInstanceLock } from "./lock.js";
+import { dirname, join } from "node:path";
 import type { IncomingMessage } from "./types.js";
 
 const env = loadEnv();
 const config = loadSearchConfig();
-const log = pino({ level: env.LOG_LEVEL });
+const log = createLogger(env.LOG_LEVEL);
+let releaseLock: () => void;
+try {
+  releaseLock = acquireInstanceLock(join(dirname(env.DATABASE_PATH), "radar.lock"));
+} catch (error) {
+  log.fatal((error as Error).message);
+  process.exit(1);
+}
 const store = new Store(env.DATABASE_PATH);
 const savedFilters = store.loadFilters();
 if (savedFilters) config.filters = { ...config.filters, ...savedFilters };
@@ -29,6 +38,8 @@ async function handle(event: any, edited: boolean): Promise<void> {
     const message = event.message;
     const text = message?.message?.trim();
     if (!text) return;
+    // Skip private chats and groups before the network call to getChat().
+    if (message.peerId?.className !== "PeerChannel") return;
     const chat = await message.getChat();
     const channel = String(chat?.username ?? "").replace(/^@/, "");
     if (!channel || !config.channels.some((item) => item.toLowerCase() === channel.toLowerCase())) return;
@@ -58,16 +69,42 @@ async function main(): Promise<void> {
   client.addEventHandler((event) => void handle(event, false), new NewMessage({}));
   client.addEventHandler((event) => void handle(event, true), new EditedMessage({}));
   void bot.runCommands(store, config);
+  startHealthCheck();
   log.info({ channels: config.channels }, "Real Estate Radar started");
 }
 
-async function shutdown(signal: string): Promise<void> {
+// MTProto can silently stop delivering updates; ping it and reconnect, or exit so a supervisor restarts us.
+const HEALTH_INTERVAL_MS = 5 * 60_000;
+let healthTimer: NodeJS.Timeout | undefined;
+let healthFailures = 0;
+function startHealthCheck(): void {
+  healthTimer = setInterval(async () => {
+    try {
+      await Promise.race([client.getMe(), new Promise((_, reject) => setTimeout(() => reject(new Error("getMe timeout")), 30_000))]);
+      if (healthFailures > 0) log.info("Telegram connection restored");
+      healthFailures = 0;
+    } catch (error) {
+      healthFailures += 1;
+      log.warn({ err: error, failures: healthFailures }, "Telegram health check failed, reconnecting");
+      if (healthFailures >= 3) { log.fatal("Telegram connection lost, exiting for restart"); await shutdown("healthcheck", 1); return; }
+      try { await client.disconnect(); await client.connect(); } catch (reconnectError) { log.warn({ err: reconnectError }, "reconnect failed"); }
+    }
+  }, HEALTH_INTERVAL_MS);
+}
+
+async function shutdown(signal: string, code = 0): Promise<void> {
   log.info({ signal }, "shutting down");
+  if (healthTimer) clearInterval(healthTimer);
   bot.stop();
   await client.disconnect();
   store.close();
-  process.exit(0);
+  releaseLock();
+  process.exit(code);
 }
+process.on("uncaughtException", (error) => { log.fatal({ err: error }, "uncaught exception"); process.exit(1); });
+process.on("unhandledRejection", (reason) => { log.error({ err: reason }, "unhandled rejection"); });
+process.on("exit", (code) => { log.info({ code }, "process exit"); });
+process.once("SIGHUP", () => void shutdown("SIGHUP"));
 process.once("SIGINT", () => void shutdown("SIGINT"));
 process.once("SIGTERM", () => void shutdown("SIGTERM"));
 main().catch((error) => { log.fatal({ err: error }, "startup failed"); process.exit(1); });

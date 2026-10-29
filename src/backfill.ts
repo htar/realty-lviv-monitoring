@@ -1,4 +1,4 @@
-import pino from "pino";
+import { createLogger } from "./logger.js";
 import { TelegramClient } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import { loadEnv, loadSearchConfig } from "./config.js";
@@ -14,7 +14,7 @@ function argument(name: string): string | undefined {
 const days = Number(argument("--days") ?? "2");
 const env = loadEnv();
 const config = loadSearchConfig();
-const log = pino({ level: env.LOG_LEVEL });
+const log = createLogger(env.LOG_LEVEL);
 const store = new Store(env.DATABASE_PATH);
 const savedFilters = store.loadFilters();
 if (savedFilters) config.filters = { ...config.filters, ...savedFilters };

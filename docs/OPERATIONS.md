@@ -102,3 +102,11 @@ SQLite settings перекривають `config/search.json`. Тому реда
 - резервні копії;
 - transactional outbox і retries;
 - секрет-менеджер замість `.env`.
+
+## Запуск у фоні та захист від дублів
+
+- Одночасно може працювати лише один екземпляр: під час старту створюється `data/radar.lock` з PID. Другий запуск одразу завершиться з повідомленням, який процес зупинити (`taskkill /PID <pid> /T /F`). Якщо бачите `409 Conflict` у логах — десь ще працює бот з тим самим `BOT_TOKEN` (інший ПК, Docker).
+- У Git Bash повернення до `$` не означає, що процес зупинено — перевіряйте `tasklist | grep node`.
+- Для постійної роботи на Windows: `npm i -g pm2`, `pm2 start ecosystem.config.cjs`, логи — `pm2 logs realty-monitoring`, зупинка — `pm2 stop realty-monitoring`. Або `docker compose up -d`.
+- Кожні 5 хвилин бот перевіряє зʼєднання з Telegram (`getMe`). Після трьох невдач поспіль процес завершується з кодом 1, щоб pm2/Docker його перезапустили.
+- `LOG_FORMAT=json` вимикає кольорові логи в терміналі.

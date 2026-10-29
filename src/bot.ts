@@ -7,7 +7,7 @@ const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
 export class TelegramBot {
   private offset = 0;
   private stopped = false;
-  private rescanInProgress = false;
+  private activeRescan?: Promise<void>;
   constructor(private readonly token: string, private readonly chatId: string,
     private readonly rescan?: (days: number) => Promise<HistoryScanSummary>,
     private readonly retryDelayMs = 3000) {}
@@ -39,121 +39,107 @@ export class TelegramBot {
           this.offset = update.update_id + 1;
           const msg = update.message;
           if (!msg?.text || String(msg.chat.id) !== this.chatId) continue;
-          let text: string | undefined;
           const [rawCommand, ...rawArgs] = String(msg.text).trim().split(/\s+/);
-          const command = rawCommand?.split("@")[0]?.toLowerCase();
-          const args = rawArgs.join(" ").trim();
-          if (command === "/start" || command === "/help") text = this.helpText();
-          if (command === "/filters") text = this.filtersText(config);
-          if (msg.text.startsWith("/status")) {
-            const s = store.stats();
-            text = `📊 Оброблено: ${s.processed}\nЗбігів: ${s.matched ?? 0}\nНадіслано: ${s.notified ?? 0}`;
-          }
-          if (command === "/budget") {
-            const value = Number(args.replace(/\s/g, ""));
-            if (!Number.isInteger(value) || value < 1000 || value > 1_000_000) {
-              text = "❌ Вкажіть бюджет цілим числом, наприклад: /budget 22000";
-            } else {
-              config.filters.maxPriceUah = value;
-              store.saveFilters(config.filters);
-              text = `✅ Максимальний бюджет: ${value.toLocaleString("uk-UA")} грн`;
-            }
-          }
-          if (command === "/rooms") {
-            const rooms = [...new Set(args.split(/[,;\s]+/).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 10))].sort((a, b) => a - b);
-            if (rooms.length === 0) {
-              text = "❌ Вкажіть кімнати, наприклад: /rooms 1,2";
-            } else {
-              config.filters.rooms = rooms;
-              store.saveFilters(config.filters);
-              text = `✅ Кімнатність: ${rooms.join(", ")}`;
-            }
-          }
-          if (command === "/district") {
-            const districts = [...new Set(args.split(/[,;]+/).map((x) => x.trim()).filter(Boolean))];
-            if (districts.length === 0) {
-              text = "❌ Вкажіть район, наприклад: /district Шевченківський";
-            } else {
-              config.filters.districts = districts;
-              store.saveFilters(config.filters);
-              text = `✅ Райони: ${districts.join(", ")}`;
-            }
-          }
-          if (command === "/strict") {
-            const value = args.toLowerCase();
-            if (!["on", "off"].includes(value)) {
-              text = "❌ Використання: /strict on або /strict off";
-            } else {
-              config.filters.requireExplicitDistrict = value === "on";
-              store.saveFilters(config.filters);
-              text = value === "on"
-                ? "✅ Оголошення повинно явно містити район"
-                : "✅ Прийматимуться також оголошення без зазначеного району";
-            }
-          }
-          if (command === "/channels") {
-            text = config.channels.length
-              ? `📡 <b>Активні джерела (${config.channels.length})</b>\n${config.channels.map((item) => `• @${escapeHtml(item)}`).join("\n")}`
-              : "⚠️ Немає активних каналів. Додайте: /channeladd @username";
-          }
-          if (command === "/channeladd") {
-            const channel = this.parseChannelUsername(args);
-            if (!channel) {
-              text = "❌ Вкажіть публічний username, наприклад: /channeladd @direct_rent";
-            } else if (config.channels.some((item) => item.toLowerCase() === channel.toLowerCase())) {
-              text = `ℹ️ @${escapeHtml(channel)} уже активний`;
-            } else {
-              config.channels.push(channel);
-              store.saveChannels(config.channels);
-              text = `✅ Канал @${escapeHtml(channel)} додано до моніторингу`;
-            }
-          }
-          if (command === "/channelremove") {
-            const channel = this.parseChannelUsername(args);
-            if (!channel) {
-              text = "❌ Вкажіть username, наприклад: /channelremove @direct_rent";
-            } else {
-              const before = config.channels.length;
-              config.channels = config.channels.filter((item) => item.toLowerCase() !== channel.toLowerCase());
-              if (config.channels.length === before) {
-                text = `ℹ️ @${escapeHtml(channel)} не був активним`;
-              } else {
-                store.saveChannels(config.channels);
-                text = `✅ Канал @${escapeHtml(channel)} вимкнено`;
-              }
-            }
-          }
-          if (command === "/channelhelp") {
-            text = "🔐 <b>Керування джерелами</b>\n/channels — активні канали\n/channeladd @username — додати або увімкнути\n/channelremove @username — вимкнути";
-          }
-          if (command === "/rescan") {
-            const days = Number(args || "2");
-            if (!Number.isInteger(days) || days < 1 || days > 30) {
-              text = "❌ Вкажіть від 1 до 30 днів, наприклад: /rescan 2";
-            } else if (!this.rescan) {
-              text = "❌ Історичне сканування недоступне в цьому режимі";
-            } else if (this.rescanInProgress) {
-              text = "⏳ Історичне сканування вже виконується";
-            } else {
-              this.rescanInProgress = true;
-              await this.call("sendMessage", { chat_id: this.chatId,
-                text: `🔄 Перевіряю активні канали за ${days} дн.`, parse_mode: "HTML" });
-              try {
-                const summary = await this.rescan(days);
-                text = `✅ <b>Повторна перевірка завершена</b>\nПеріод: ${summary.firstDay} — ${summary.lastDay}\nПереглянуто: ${summary.scanned}\nНових версій: ${summary.newVersions}\nЗбігів: ${summary.matched}\nДоставлено/повторено: ${summary.notified}\nПомилок каналів: ${summary.failedChannels}`;
-              } catch (error) {
-                text = `❌ Сканування не завершено: ${error instanceof Error ? escapeHtml(error.message) : "невідома помилка"}`;
-              } finally {
-                this.rescanInProgress = false;
-              }
-            }
-          }
-          if (text) await this.call("sendMessage", { chat_id: this.chatId, text, parse_mode: "HTML" });
+          const command = rawCommand?.split("@")[0]?.toLowerCase() ?? "";
+          const handler = this.commands[command];
+          if (!handler) continue;
+          const text = handler.call(this, rawArgs.join(" ").trim(), store, config);
+          if (text) await this.send(text);
         }
       } catch (error) {
+        console.error("Bot API polling failed:", error instanceof Error ? error.message : error);
         if (!this.stopped) await new Promise((r) => setTimeout(r, this.retryDelayMs));
       }
     }
+    await this.activeRescan;
+  }
+
+  private send(text: string): Promise<unknown> {
+    return this.call("sendMessage", { chat_id: this.chatId, text, parse_mode: "HTML" });
+  }
+
+  private updateFilters(store: Store, config: SearchConfig, patch: Partial<SearchConfig["filters"]>): void {
+    Object.assign(config.filters, patch);
+    store.saveFilters(config.filters);
+  }
+
+  private readonly commands: Record<string, (this: TelegramBot, args: string, store: Store, config: SearchConfig) => string | undefined> = {
+    "/start": () => this.helpText(),
+    "/help": () => this.helpText(),
+    "/filters": (_args, _store, config) => this.filtersText(config),
+    "/status": (_args, store) => {
+      const s = store.stats();
+      return `📊 Оброблено: ${s.processed}\nЗбігів: ${s.matched ?? 0}\nНадіслано: ${s.notified ?? 0}`;
+    },
+    "/budget": (args, store, config) => {
+      const value = Number(args.replace(/\s/g, ""));
+      if (!Number.isInteger(value) || value < 1000 || value > 1_000_000) return "❌ Вкажіть бюджет цілим числом, наприклад: /budget 22000";
+      this.updateFilters(store, config, { maxPriceUah: value });
+      return `✅ Максимальний бюджет: ${value.toLocaleString("uk-UA")} грн`;
+    },
+    "/rooms": (args, store, config) => {
+      const rooms = [...new Set(args.split(/[,;\s]+/).map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 10))].sort((a, b) => a - b);
+      if (rooms.length === 0) return "❌ Вкажіть кімнати, наприклад: /rooms 1,2";
+      this.updateFilters(store, config, { rooms });
+      return `✅ Кімнатність: ${rooms.join(", ")}`;
+    },
+    "/district": (args, store, config) => {
+      const districts = [...new Set(args.split(/[,;]+/).map((x) => x.trim()).filter(Boolean))];
+      if (districts.length === 0) return "❌ Вкажіть район, наприклад: /district Шевченківський";
+      this.updateFilters(store, config, { districts });
+      return `✅ Райони: ${districts.join(", ")}`;
+    },
+    "/strict": (args, store, config) => {
+      const value = args.toLowerCase();
+      if (!["on", "off"].includes(value)) return "❌ Використання: /strict on або /strict off";
+      this.updateFilters(store, config, { requireExplicitDistrict: value === "on" });
+      return value === "on"
+        ? "✅ Оголошення повинно явно містити район"
+        : "✅ Прийматимуться також оголошення без зазначеного району";
+    },
+    "/channels": (_args, _store, config) => config.channels.length
+      ? `📡 <b>Активні джерела (${config.channels.length})</b>\n${config.channels.map((item) => `• @${escapeHtml(item)}`).join("\n")}`
+      : "⚠️ Немає активних каналів. Додайте: /channeladd @username",
+    "/channeladd": (args, store, config) => {
+      const channel = this.parseChannelUsername(args);
+      if (!channel) return "❌ Вкажіть публічний username, наприклад: /channeladd @direct_rent";
+      if (config.channels.some((item) => item.toLowerCase() === channel.toLowerCase())) return `ℹ️ @${escapeHtml(channel)} уже активний`;
+      config.channels.push(channel);
+      store.saveChannels(config.channels);
+      return `✅ Канал @${escapeHtml(channel)} додано до моніторингу`;
+    },
+    "/channelremove": (args, store, config) => {
+      const channel = this.parseChannelUsername(args);
+      if (!channel) return "❌ Вкажіть username, наприклад: /channelremove @direct_rent";
+      const before = config.channels.length;
+      config.channels = config.channels.filter((item) => item.toLowerCase() !== channel.toLowerCase());
+      if (config.channels.length === before) return `ℹ️ @${escapeHtml(channel)} не був активним`;
+      store.saveChannels(config.channels);
+      return `✅ Канал @${escapeHtml(channel)} вимкнено`;
+    },
+    "/channelhelp": () => "🔐 <b>Керування джерелами</b>\n/channels — активні канали\n/channeladd @username — додати або увімкнути\n/channelremove @username — вимкнути",
+    "/rescan": (args) => {
+      const days = Number(args || "2");
+      if (!Number.isInteger(days) || days < 1 || days > 30) return "❌ Вкажіть від 1 до 30 днів, наприклад: /rescan 2";
+      if (!this.rescan) return "❌ Історичне сканування недоступне в цьому режимі";
+      if (this.activeRescan) return "⏳ Історичне сканування вже виконується";
+      this.activeRescan = this.runRescan(days).finally(() => { this.activeRescan = undefined; });
+      return undefined;
+    }
+  };
+
+  // Runs in the background so other commands keep working during a long scan.
+  private async runRescan(days: number): Promise<void> {
+    let text: string;
+    try {
+      await this.send(`🔄 Перевіряю активні канали за ${days} дн.`);
+      const summary = await this.rescan!(days);
+      text = `✅ <b>Повторна перевірка завершена</b>\nПеріод: ${summary.firstDay} — ${summary.lastDay}\nПереглянуто: ${summary.scanned}\nНових версій: ${summary.newVersions}\nЗбігів: ${summary.matched}\nДоставлено/повторено: ${summary.notified}\nПомилок каналів: ${summary.failedChannels}${summary.failedNotifications ? `
+Не надіслано: ${summary.failedNotifications}` : ""}`;
+    } catch (error) {
+      text = `❌ Сканування не завершено: ${error instanceof Error ? escapeHtml(error.message) : "невідома помилка"}`;
+    }
+    await this.send(text).catch((error) => console.error("Failed to send rescan result:", error));
   }
 
   stop(): void { this.stopped = true; }

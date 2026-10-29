@@ -216,7 +216,7 @@ test("runs an authorized historical rescan command", async () => {
   const bot = new TelegramBot("token", "42", async (days) => {
     requestedDays = days;
     return { firstDay: "2026-10-28", lastDay: "2026-10-29", timeZone: "Europe/Kyiv",
-      scanned: 20, newVersions: 5, matched: 2, notified: 2, retriedPending: 2, failedChannels: 0 };
+      scanned: 20, newVersions: 5, matched: 2, notified: 2, retriedPending: 2, failedChannels: 0, failedNotifications: 0 };
   });
   const sent: Array<Record<string, unknown>> = [];
   let polls = 0;

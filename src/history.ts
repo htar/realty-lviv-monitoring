@@ -16,6 +16,7 @@ export interface HistoryScanSummary {
   notified: number;
   retriedPending: number;
   failedChannels: number;
+  failedNotifications: number;
 }
 
 export async function scanHistory(options: {
@@ -35,7 +36,7 @@ export async function scanHistory(options: {
   const from = zonedMidnight(firstDay, DEFAULT_TIME_ZONE);
   const to = zonedMidnight(nextDay, DEFAULT_TIME_ZONE);
   const summary: HistoryScanSummary = { firstDay, lastDay: today, timeZone: DEFAULT_TIME_ZONE,
-    scanned: 0, newVersions: 0, matched: 0, notified: 0, retriedPending: 0, failedChannels: 0 };
+    scanned: 0, newVersions: 0, matched: 0, notified: 0, retriedPending: 0, failedChannels: 0, failedNotifications: 0 };
 
   for (const channel of config.channels) {
     let channelScanned = 0;
@@ -71,10 +72,15 @@ export async function scanHistory(options: {
   }
 
   for (const pending of store.pendingNotifications()) {
-    await bot.sendListing(pending.message, pending.listing);
-    store.markNotified(pending.key);
-    summary.notified += 1;
-    summary.retriedPending += 1;
+    try {
+      await bot.sendListing(pending.message, pending.listing);
+      store.markNotified(pending.key);
+      summary.notified += 1;
+      summary.retriedPending += 1;
+    } catch (error) {
+      summary.failedNotifications += 1;
+      logger?.warn({ link: pending.message.link, err: error }, "pending notification failed");
+    }
   }
   return summary;
 }
