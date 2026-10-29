@@ -180,6 +180,13 @@ export class Store {
     return (this.db.pragma("integrity_check", { simple: true }) as string) === "ok";
   }
 
+  isNotified(key: string): boolean {
+    const [channelId, messageId, hash] = key.split(":");
+    const row = this.db.prepare("SELECT notified_at FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash = ?")
+      .get(channelId, Number(messageId), hash) as { notified_at: string | null } | undefined;
+    return Boolean(row?.notified_at);
+  }
+
   markNotified(key: string): void {
     const [channelId, messageId, hash] = key.split(":");
     this.db.prepare("UPDATE messages SET notified_at = ? WHERE channel_id = ? AND message_id = ? AND content_hash = ?")
@@ -200,13 +207,13 @@ export class Store {
       .run(retry, next, error instanceof Error ? error.message : String(error), channelId, Number(messageId), hash);
   }
 
-  pendingNotifications(limit = 500, protectFreshSeconds = 0): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
-    const freshCutoff = new Date(Date.now() - protectFreshSeconds * 1000).toISOString();
+  pendingNotifications(limit = 500, protectFreshSeconds = 0, now = new Date()): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
+    const freshCutoff = new Date(now.getTime() -protectFreshSeconds * 1000).toISOString();
     const rows = this.db.prepare(`SELECT channel_id, message_id, content_hash, channel, text, link,
       published_at, edited, parsed_json FROM messages
       WHERE matched = 1 AND notified_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       AND (retry_count > 0 OR published_at <= ?)
-      ORDER BY published_at ASC LIMIT ?`).all(new Date().toISOString(), freshCutoff, limit) as Array<any>;
+      ORDER BY published_at ASC LIMIT ?`).all(now.toISOString(), freshCutoff, limit) as Array<any>;
     const pending: Array<{ key: string; message: IncomingMessage; listing: Listing }> = [];
     for (const row of rows) {
       try {

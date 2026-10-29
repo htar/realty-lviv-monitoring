@@ -25,6 +25,7 @@ let lastRecoveryAt: Date | undefined;
 let recoveryRunning: Promise<ReturnType<typeof scanHistory> extends Promise<infer T> ? T : never> | undefined;
 let recoveryTimer: NodeJS.Timeout | undefined;
 let queueTimer: NodeJS.Timeout | undefined;
+let flushRunning = false;
 try {
   releaseLock = acquireInstanceLock(join(dirname(env.DATABASE_PATH), "radar.lock"));
 } catch (error) {
@@ -116,10 +117,12 @@ async function main(): Promise<void> {
     }).catch((error) => log.warn({ err: error }, "scheduled recovery failed"));
   }, env.RESCAN_INTERVAL_HOURS * 3_600_000);
   queueTimer = setInterval(() => {
-    if (recoveryRunning) return;
+    if (recoveryRunning || flushRunning) return;
+    flushRunning = true;
     void flushPendingNotifications({ store, bot, logger: log, protectFreshSeconds: 60 }).then((result) => {
       if (result.notified) log.info(result, "pending delivery queue flushed");
-    });
+    }).catch((error) => log.warn({ err: error }, "pending delivery queue failed"))
+      .finally(() => { flushRunning = false; });
   }, 10_000);
   if (env.SITES_INTERVAL_MIN > 0) {
     stopSites = startSiteMonitor({ config, store, bot, logger: log }, env.SITES_INTERVAL_MIN * 60_000);

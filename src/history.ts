@@ -26,10 +26,10 @@ export async function flushPendingNotifications(options: {
   const { store, bot, logger, now = new Date(), protectFreshSeconds = 0 } = options;
   let notified = 0;
   let failed = 0;
-  for (const pending of store.pendingNotifications(500, protectFreshSeconds)) {
+  for (const pending of store.pendingNotifications(500, protectFreshSeconds, now)) {
     try {
       const result = await deliverListing({ store, bot, message: pending.message, listing: pending.listing, key: pending.key });
-      if (result !== "duplicate") notified += 1;
+      if (result === "sent") notified += 1;
     } catch (error) {
       failed += 1;
       store.markDeliveryFailed(pending.key, error, now);

@@ -62,6 +62,29 @@ test("skips the same flat reposted in another channel", withStore(async (store) 
   assert.deepEqual(sent[1], { id: 1, previousPrice: 20000 });
 }));
 
+test("concurrent and repeated delivery of one message sends it once", withStore(async (store) => {
+  let sends = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const bot = { sendListing: async () => { sends += 1; await gate; } };
+  const m = message(1, LISTING);
+  const listing = parseListing(m.text, config());
+  const saved = store.save(m, listing, true);
+  const first = deliverListing({ store, bot, message: m, listing, key: saved.key });
+  assert.equal(await deliverListing({ store, bot, message: m, listing, key: saved.key }), "skipped");
+  release();
+  assert.equal(await first, "sent");
+  assert.equal(await deliverListing({ store, bot, message: m, listing, key: saved.key }), "skipped");
+  assert.equal(sends, 1);
+}));
+
+test("pendingNotifications uses the injected clock for the fresh-message window", withStore(async (store) => {
+  const m = { ...message(1, LISTING), date: new Date("2026-01-01T10:00:00Z") };
+  store.save(m, parseListing(m.text, config()), true);
+  assert.equal(store.pendingNotifications(500, 60, new Date("2026-01-01T10:00:30Z")).length, 0);
+  assert.equal(store.pendingNotifications(500, 60, new Date("2026-01-01T10:02:00Z")).length, 1);
+}));
+
 test("fingerprint uses text when there is no phone", () => {
   const a = parseListing("Оренда квартири, Львів!!", config());
   const b = parseListing("оренда   квартири львів", config());

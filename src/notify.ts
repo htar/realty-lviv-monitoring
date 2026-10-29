@@ -15,13 +15,27 @@ export function listingFingerprint(listing: Listing): string {
   return createHash("sha256").update(basis).digest("hex");
 }
 
-export type DeliveryResult = "sent" | "duplicate";
+export type DeliveryResult = "sent" | "duplicate" | "skipped";
+
+// Keys being delivered right now; live handler, queue flush and recovery may race on one message.
+const inFlight = new Set<string>();
 
 /** Sends a matched listing unless the same flat was sent recently; reports price changes on edits. */
 export async function deliverListing(options: {
   store: Store; bot: Pick<TelegramBot, "sendListing">; message: IncomingMessage; listing: Listing; key: string;
 }): Promise<DeliveryResult> {
   const { store, bot, message, listing, key } = options;
+  if (inFlight.has(key) || store.isNotified(key)) return "skipped";
+  inFlight.add(key);
+  try {
+    return await deliverOnce(store, bot, message, listing, key);
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
+async function deliverOnce(store: Store, bot: Pick<TelegramBot, "sendListing">, message: IncomingMessage,
+  listing: Listing, key: string): Promise<DeliveryResult> {
   const previous = store.previousPrice(message.channelId, message.messageId, key);
   const previousPrice = previous && listing.priceUah && previous !== listing.priceUah ? previous : undefined;
   const fingerprint = listingFingerprint(listing);
