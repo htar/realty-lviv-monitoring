@@ -56,6 +56,41 @@ docker compose exec realty-monitoring npm run backfill -- --days 2
 
 Використовуйте Task Scheduler із trigger **At log on** або **At startup**. Action має запускати `npm start` із working directory проєкту. Не прив’язуйте шлях до глобального Node у коді — шлях потрібен лише конфігурації конкретного комп’ютера.
 
+Приклад реєстрації завдання в PowerShell (шляхи підставте свої; у `$arg` — той самий запуск, що й `npm start`, з виводом у `logs\bot.log`):
+
+```powershell
+$dir  = 'C:\шлях\до\realty-monitoring'
+$node = (Get-Command node).Source
+$user = "$env:USERDOMAIN\$env:USERNAME"
+
+New-Item -ItemType Directory -Force "$dir\logs" | Out-Null
+$arg       = '/c ""' + $node + '" node_modules\tsx\dist\cli.mjs src\index.ts >> logs\bot.log 2>&1"'
+$action    = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $arg -WorkingDirectory $dir
+$trigger   = New-ScheduledTaskTrigger -AtLogOn -User $user
+$trigger.Delay = 'PT30S'
+$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+  -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+Register-ScheduledTask -TaskName 'realty-monitoring' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
+```
+
+Завдання стартує через 30 секунд після входу (щоб піднялася мережа), працює в прихованому вікні без обмеження за часом і перезапускається щохвилини після збою. Керування:
+
+```powershell
+Start-ScheduledTask   -TaskName realty-monitoring   # запустити зараз
+Stop-ScheduledTask    -TaskName realty-monitoring   # зупинити
+Disable-ScheduledTask -TaskName realty-monitoring   # вимкнути автозапуск
+Unregister-ScheduledTask -TaskName realty-monitoring -Confirm:$false   # видалити
+```
+
+Логи дописуються у `logs\bot.log` (ротації немає; переконайтеся, що `logs/` або `*.log` є в `.gitignore`):
+
+```powershell
+Get-Content logs\bot.log -Tail 50 -Wait   # стежити в реальному часі
+```
+
+Не запускайте `npm start` вручну, поки завдання працює: два процеси з однією SQLite-базою та одним токеном конфліктують. Спершу `Stop-ScheduledTask`.
+
 ## Linux без Docker
 
 Рекомендовано systemd. Приклад `/etc/systemd/system/realty-monitoring.service`:
