@@ -1,5 +1,5 @@
 import type { Listing, SearchConfig, IncomingMessage } from "./types.js";
-import type { Store } from "./database.js";
+import { splitChannelMessage, type Store } from "./database.js";
 import type { HistoryScanSummary } from "./history.js";
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -71,12 +71,13 @@ export class TelegramBot {
     if (data === "hide") {
       await this.call("deleteMessage", { chat_id: this.chatId, message_id: query.message.message_id });
     } else if (data.startsWith("fav:")) {
-      const [, channelId, messageId] = data.split(":");
-      answer = store.addFavorite(channelId!, Number(messageId)) ? "⭐ Збережено. Список: /saved" : "Уже в збережених";
+      const [channelId, messageId] = splitChannelMessage(data.slice("fav:".length));
+      answer = store.addFavorite(channelId, messageId) ? "⭐ Збережено. Список: /saved" : "Уже в збережених";
     } else if (data.startsWith("quality:")) {
-      const [, verdict, channelId, messageId] = data.split(":");
+      const verdict = data.split(":")[1];
+      const [channelId, messageId] = splitChannelMessage(data.slice(`quality:${verdict}:`.length));
       if ((verdict === "good" || verdict === "bad") && channelId && messageId) {
-        store.recordFeedback(channelId, Number(messageId), verdict);
+        store.recordFeedback(channelId, messageId, verdict);
         answer = verdict === "good" ? "✅ Дякую, збіг підтверджено" : "❌ Дякую, врахуємо як хибний збіг";
       }
     }

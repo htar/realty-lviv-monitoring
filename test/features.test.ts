@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Store } from "../src/database.js";
+import { Store, splitKey, splitChannelMessage } from "../src/database.js";
 import { TelegramBot } from "../src/bot.js";
 import { deliverListing, listingFingerprint } from "../src/notify.js";
 import { runScheduledJobs, startScheduler, pruneBackups, digestText } from "../src/scheduler.js";
@@ -83,6 +83,20 @@ test("pendingNotifications uses the injected clock for the fresh-message window"
   store.save(m, parseListing(m.text, config()), true);
   assert.equal(store.pendingNotifications(500, 60, new Date("2026-01-01T10:00:30Z")).length, 0);
   assert.equal(store.pendingNotifications(500, 60, new Date("2026-01-01T10:02:00Z")).length, 1);
+}));
+
+test("site listings (channel id with a colon) are marked notified and buttons parse", withStore(async (store) => {
+  assert.deepEqual(splitKey("site:rieltor.ua:13145813:abc"), ["site:rieltor.ua", "13145813", "abc"]);
+  assert.deepEqual(splitKey("100:1:abc"), ["100", "1", "abc"]);
+  assert.deepEqual(splitChannelMessage("site:rieltor.ua:13145813"), ["site:rieltor.ua", 13145813]);
+  const m = message(13145813, LISTING, "rieltor.ua", "site:rieltor.ua");
+  const listing = parseListing(m.text, config());
+  const saved = store.save(m, listing, true);
+  const bot = { sendListing: async () => {} };
+  assert.equal(await deliverListing({ store, bot, message: m, listing, key: saved.key }), "sent");
+  assert.equal(store.isNotified(saved.key), true);
+  assert.equal(store.pendingNotifications().length, 0);
+  assert.equal(store.summarySince(new Date(0)).notified, 1);
 }));
 
 test("fingerprint uses text when there is no phone", () => {
@@ -190,6 +204,7 @@ test("bot buttons save and hide listings, new commands work", withStore(async (s
       if (polls === 1) return response([
         { update_id: 1, callback_query: { id: "q1", data: "fav:100:1", message: { chat, message_id: 5 } } },
         { update_id: 2, callback_query: { id: "q2", data: "fav:100:1", message: { chat, message_id: 5 } } },
+        { update_id: 6, callback_query: { id: "q6", data: "quality:good:site:rieltor.ua:7", message: { chat, message_id: 5 } } },
         { update_id: 3, callback_query: { id: "q3", data: "hide", message: { chat, message_id: 5 } } },
         { update_id: 4, callback_query: { id: "q4", data: "hide", message: { chat: { id: 1 }, message_id: 5 } } },
         { update_id: 5, callback_query: { id: "q5", data: "boom", message: { chat, message_id: 5 } } }
@@ -206,7 +221,8 @@ test("bot buttons save and hide listings, new commands work", withStore(async (s
   };
   await bot.runCommands(store, cfg);
   const answers = calls.filter((c) => c.method === "answerCallbackQuery").map((c) => c.body.text);
-  assert.deepEqual(answers.slice(0, 3), ["⭐ Збережено. Список: /saved", "Уже в збережених", ""]);
+  assert.deepEqual(answers.slice(0, 4), ["⭐ Збережено. Список: /saved", "Уже в збережених", "✅ Дякую, збіг підтверджено", ""]);
+  assert.equal(store.feedbackStats().good, 1);
   assert.equal(calls.filter((c) => c.method === "deleteMessage").length, 1);
   const texts = calls.filter((c) => c.method === "sendMessage").map((c) => String(c.body.text));
   assert.match(texts[0]!, /Збережені \(1\)/);

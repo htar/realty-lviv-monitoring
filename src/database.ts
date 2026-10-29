@@ -4,6 +4,23 @@ import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Listing, SearchConfig } from "./types.js";
 
+/**
+ * Splits a "channelId:messageId:hash" key. The channel id itself may contain ":"
+ * (site listings use "site:rieltor.ua"), so the last two parts are taken from the end.
+ */
+export function splitKey(key: string): [string, string, string] {
+  const parts = key.split(":");
+  const hash = parts.pop() ?? "";
+  const messageId = parts.pop() ?? "";
+  return [parts.join(":"), messageId, hash];
+}
+
+/** Same idea for button data "prefix:channelId:messageId": the message id is the last part. */
+export function splitChannelMessage(rest: string): [string, number] {
+  const at = rest.lastIndexOf(":");
+  return [rest.slice(0, at), Number(rest.slice(at + 1))];
+}
+
 export class Store {
   private readonly db: Database.Database;
 
@@ -91,7 +108,7 @@ export class Store {
 
   /** UAH price of the most recent earlier version of the same post, if it had one. */
   previousPrice(channelId: string, messageId: number, currentKey: string): number | undefined {
-    const hash = currentKey.split(":")[2];
+    const hash = splitKey(currentKey)[2];
     const rows = this.db.prepare(`SELECT parsed_json FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash != ?
       ORDER BY rowid DESC LIMIT 1`).all(channelId, messageId, hash) as Array<{ parsed_json: string }>;
     try { return rows[0] ? (JSON.parse(rows[0].parsed_json) as Listing).priceUah : undefined; }
@@ -181,14 +198,14 @@ export class Store {
   }
 
   isNotified(key: string): boolean {
-    const [channelId, messageId, hash] = key.split(":");
+    const [channelId, messageId, hash] = splitKey(key);
     const row = this.db.prepare("SELECT notified_at FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash = ?")
       .get(channelId, Number(messageId), hash) as { notified_at: string | null } | undefined;
     return Boolean(row?.notified_at);
   }
 
   markNotified(key: string): void {
-    const [channelId, messageId, hash] = key.split(":");
+    const [channelId, messageId, hash] = splitKey(key);
     this.db.prepare("UPDATE messages SET notified_at = ? WHERE channel_id = ? AND message_id = ? AND content_hash = ?")
       .run(new Date().toISOString(), channelId, Number(messageId), hash);
     this.db.prepare(`UPDATE messages SET retry_count = 0, next_attempt_at = NULL, last_delivery_error = NULL
@@ -196,7 +213,7 @@ export class Store {
   }
 
   markDeliveryFailed(key: string, error: unknown, now = new Date()): void {
-    const [channelId, messageId, hash] = key.split(":");
+    const [channelId, messageId, hash] = splitKey(key);
     const row = this.db.prepare(`SELECT retry_count FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash = ?`)
       .get(channelId, Number(messageId), hash) as { retry_count: number } | undefined;
     const retry = (row?.retry_count ?? 0) + 1;
