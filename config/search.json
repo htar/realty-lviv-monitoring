@@ -1,0 +1,24 @@
+{
+  "channels": [
+    "orendakvartyr_ua",
+    "direct_rent",
+    "neruhomist_lviv_ua",
+    "lvivrentua",
+    "ValionEstateBot",
+    "orenda_lvivprozoro",
+    "orendakvarturlviv",
+    "orendakvarturlviv1",
+    "lviv_no_maklers",
+    "lvivnerucho",
+    "prodagkvarturlviv"
+  ],
+  "filters": {
+    "dealType": "rent",
+    "propertyTypes": ["apartment"],
+    "city": "Львів",
+    "districts": ["Шевченківський"],
+    "rooms": [1, 2],
+    "maxPriceUah": 22000,
+    "requireExplicitDistrict": true
+  }
+}
