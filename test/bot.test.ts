@@ -1,0 +1,187 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { TelegramBot } from "../src/bot.js";
+import { Store } from "../src/database.js";
+import type { IncomingMessage, Listing, SearchConfig } from "../src/types.js";
+
+const originalFetch = globalThis.fetch;
+
+function response(result: unknown, ok = true, status = 200): Response {
+  return new Response(JSON.stringify(ok ? { ok: true, result } : { ok: false, description: result }), {
+    status, headers: { "content-type": "application/json" }
+  });
+}
+
+function config(): SearchConfig {
+  return { channels: ["direct_rent"], filters: { dealType: "rent", propertyTypes: ["apartment"],
+    city: "Львів", districts: ["Шевченківський"], rooms: [1, 2], maxPriceUah: 22000,
+    requireExplicitDistrict: true } };
+}
+
+test("formats and escapes a listing notification", async () => {
+  let sent: Record<string, unknown> | undefined;
+  globalThis.fetch = async (_url, init) => {
+    sent = JSON.parse(String(init?.body));
+    return response({ message_id: 1 });
+  };
+  try {
+    const bot = new TelegramBot("token", "42");
+    const incoming: IncomingMessage = { channel: "direct_rent", channelId: "1", messageId: 7,
+      text: "Квартира <центр> & ремонт", date: new Date(), link: "https://t.me/direct_rent/7", edited: false };
+    const listing: Listing = { dealType: "rent", propertyType: "apartment", city: "Львів",
+      district: "Шевченківський", rooms: 2, priceUah: 21500, currency: "UAH",
+      isLikelyBroker: true, isDemandPost: false, text: incoming.text };
+    await bot.sendListing(incoming, listing);
+    assert.equal(sent?.chat_id, "42");
+    assert.equal(sent?.parse_mode, "HTML");
+    assert.match(String(sent?.text), /21 500 грн/);
+    assert.match(String(sent?.text), /&lt;центр&gt; &amp; ремонт/);
+    assert.match(String(sent?.text), /Ймовірно посередник/);
+    assert.match(String(sent?.text), /https:\/\/t\.me\/direct_rent\/7/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("surfaces Bot API errors", async () => {
+  globalThis.fetch = async () => response("Unauthorized", false, 401);
+  try {
+    const bot = new TelegramBot("bad", "42");
+    const incoming: IncomingMessage = { channel: "test", channelId: "1", messageId: 1,
+      text: "text", date: new Date(), link: "https://t.me/test/1", edited: false };
+    const listing: Listing = { dealType: "rent", propertyType: "apartment", rooms: 1,
+      priceUah: 10000, isLikelyBroker: false, isDemandPost: false, text: "text" };
+    await assert.rejects(() => bot.sendListing(incoming, listing), /Unauthorized/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("formats fallback values when optional listing fields are absent", async () => {
+  let text = "";
+  globalThis.fetch = async (_url, init) => {
+    text = String(JSON.parse(String(init?.body)).text);
+    return response({ message_id: 1 });
+  };
+  try {
+    const bot = new TelegramBot("token", "42");
+    await bot.sendListing({ channel: "test_channel", channelId: "1", messageId: 1, text: "Оголошення",
+      date: new Date(), link: "https://t.me/test_channel/1", edited: false },
+    { dealType: "rent", propertyType: "apartment", isLikelyBroker: false, isDemandPost: false, text: "Оголошення" });
+    assert.match(text, /Львів/);
+    assert.match(text, /— грн/);
+    assert.doesNotMatch(text, /Ймовірно посередник/);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("processes authorized commands, ignores other chats and persists changes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const current = config();
+  const bot = new TelegramBot("token", "42");
+  const messages = [
+    { update_id: 1, message: { chat: { id: 99 }, text: "/budget 99999" } },
+    { update_id: 2, message: { chat: { id: 42 }, text: "/budget 25000" } },
+    { update_id: 3, message: { chat: { id: 42 }, text: "/rooms wrong" } },
+    { update_id: 4, message: { chat: { id: 42 }, text: "/rooms 1,3;3" } },
+    { update_id: 5, message: { chat: { id: 42 }, text: "/district Шевченківський, Франківський" } },
+    { update_id: 6, message: { chat: { id: 42 }, text: "/strict maybe" } },
+    { update_id: 7, message: { chat: { id: 42 }, text: "/strict off" } },
+    { update_id: 8, message: { chat: { id: 42 }, text: "/channeladd https://t.me/new_channel" } },
+    { update_id: 9, message: { chat: { id: 42 }, text: "/channeladd @new_channel" } },
+    { update_id: 10, message: { chat: { id: 42 }, text: "/channeladd bad!" } },
+    { update_id: 11, message: { chat: { id: 42 }, text: "/channelremove @direct_rent" } },
+    { update_id: 12, message: { chat: { id: 42 }, text: "/channelremove @missing_channel" } },
+    { update_id: 13, message: { chat: { id: 42 }, text: "/channels" } },
+    { update_id: 14, message: { chat: { id: 42 }, text: "/filters" } },
+    { update_id: 15, message: { chat: { id: 42 }, text: "/status" } },
+    { update_id: 16, message: { chat: { id: 42 }, text: "/channelhelp" } },
+    { update_id: 17, message: { chat: { id: 42 }, text: "/help" } }
+  ];
+  const sent: Array<Record<string, unknown>> = [];
+  let polls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/getUpdates")) {
+      polls += 1;
+      if (polls === 1) return response(messages);
+      bot.stop();
+      return response([]);
+    }
+    sent.push(JSON.parse(String(init?.body)));
+    return response({ message_id: sent.length });
+  };
+  try {
+    await bot.runCommands(store, current);
+    assert.equal(current.filters.maxPriceUah, 25000);
+    assert.deepEqual(current.filters.rooms, [1, 3]);
+    assert.deepEqual(current.filters.districts, ["Шевченківський", "Франківський"]);
+    assert.equal(current.filters.requireExplicitDistrict, false);
+    assert.deepEqual(current.channels, ["new_channel"]);
+    assert.deepEqual(store.loadChannels(), ["new_channel"]);
+    assert.deepEqual(store.loadFilters(), current.filters);
+    assert.equal(sent.length, 16);
+    assert.ok(sent.every((body) => body.chat_id === "42"));
+    assert.ok(sent.some((body) => String(body.text).includes("Активні джерела")));
+    assert.ok(sent.some((body) => String(body.text).includes("Поточні фільтри")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("covers empty and invalid command branches", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const current = config();
+  current.channels = [];
+  const bot = new TelegramBot("token", "42");
+  const messages = [
+    { update_id: 1, message: { chat: { id: 42 } } },
+    { update_id: 2, message: { chat: { id: 42 }, text: "/start@my_bot" } },
+    { update_id: 3, message: { chat: { id: 42 }, text: "/budget 999" } },
+    { update_id: 4, message: { chat: { id: 42 }, text: "/district" } },
+    { update_id: 5, message: { chat: { id: 42 }, text: "/channels" } },
+    { update_id: 6, message: { chat: { id: 42 }, text: "/channelremove bad!" } },
+    { update_id: 7, message: { chat: { id: 42 }, text: "/unknown" } }
+  ];
+  const sent: Array<Record<string, unknown>> = [];
+  let polls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/getUpdates")) {
+      polls += 1;
+      if (polls === 1) return response(messages);
+      bot.stop();
+      return response([]);
+    }
+    sent.push(JSON.parse(String(init?.body)));
+    return response({ message_id: sent.length });
+  };
+  try {
+    await bot.runCommands(store, current);
+    assert.equal(sent.length, 5);
+    assert.ok(sent.some((body) => String(body.text).includes("Немає активних каналів")));
+    assert.ok(sent.some((body) => String(body.text).includes("бюджет цілим числом")));
+    assert.ok(sent.some((body) => String(body.text).includes("Вкажіть район")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("stops command polling cleanly after a network error", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const bot = new TelegramBot("token", "42");
+  globalThis.fetch = async () => {
+    bot.stop();
+    throw new Error("network down");
+  };
+  try {
+    await bot.runCommands(store, config());
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

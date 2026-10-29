@@ -6,42 +6,13 @@ import { parseListing, matchesSearch } from "./parser.js";
 import { Store } from "./database.js";
 import { TelegramBot } from "./bot.js";
 import type { IncomingMessage } from "./types.js";
+import { DEFAULT_TIME_ZONE, dateInTimeZone, zonedMidnight, addCalendarDays } from "./time.js";
 
-const TIME_ZONE = "Europe/Kyiv";
+const TIME_ZONE = DEFAULT_TIME_ZONE;
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
-}
-
-function dateInTimeZone(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit"
-  }).format(date);
-}
-
-function zonedMidnight(dateText: string): Date {
-  const [year, month, day] = dateText.split("-").map(Number);
-  if (!year || !month || !day) throw new Error(`Некоректна дата: ${dateText}`);
-  const desired = Date.UTC(year, month - 1, day);
-  let utc = desired;
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-  });
-  for (let i = 0; i < 2; i += 1) {
-    const parts = Object.fromEntries(formatter.formatToParts(new Date(utc)).map((part) => [part.type, part.value]));
-    const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day),
-      Number(parts.hour), Number(parts.minute), Number(parts.second));
-    utc += desired - represented;
-  }
-  return new Date(utc);
-}
-
-function addCalendarDays(dateText: string, days: number): string {
-  const [year, month, day] = dateText.split("-").map(Number);
-  const date = new Date(Date.UTC(year!, month! - 1, day! + days));
-  return date.toISOString().slice(0, 10);
 }
 
 const days = Number(argument("--days") ?? "2");
@@ -58,11 +29,11 @@ if (savedFilters) config.filters = { ...config.filters, ...savedFilters };
 const savedChannels = store.loadChannels();
 if (savedChannels) config.channels = savedChannels;
 
-const today = dateInTimeZone(new Date());
+const today = dateInTimeZone(new Date(), TIME_ZONE);
 const firstDay = addCalendarDays(today, -(days - 1));
 const nextDay = addCalendarDays(today, 1);
-const from = zonedMidnight(firstDay);
-const to = zonedMidnight(nextDay);
+const from = zonedMidnight(firstDay, TIME_ZONE);
+const to = zonedMidnight(nextDay, TIME_ZONE);
 
 const bot = new TelegramBot(env.BOT_TOKEN, env.BOT_CHAT_ID);
 const client = new TelegramClient(new StringSession(env.TG_SESSION), env.TG_API_ID, env.TG_API_HASH, {

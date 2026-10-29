@@ -10,7 +10,7 @@ const RENT = /(оренд\p{L}*|здам|здається|сдам|сдаетс�
 const SALE = /(продам|продаж|продається|купівл\p{L}*|продается)/iu;
 const APARTMENT = /(квартир\p{L}*|апартамент\p{L}*)/iu;
 const HOUSE = /(будинок|будинку|будинк\p{L}*|дом|котедж\p{L}*)/iu;
-const ROOM = /(кімнат\p{L}*|комнат\p{L}*)/iu;
+const ROOM = /(?:(?:оренд\p{L}*|здам|здається|сдам|сдается)\s+(?:окрем\p{L}*\s+)?(?:кімнат\p{L}*|комнат\p{L}*)|(?:кімнат\p{L}*|комнат\p{L}*)\s+(?:у|в)\s+квартир\p{L}*)/iu;
 const BROKER = /(рієлтор|риелтор|агентств\p{L}*|комісі[яї]|комисси[яи]|посередник)/iu;
 const DEMAND_POST = /(?:шукаю|шукаємо|шукає|потрібна|потрібне|потрібен|зніму|ищу|ищем|ищет|нужна|нужно|нужен|сниму)(?:\s+[^\s,.!?]+){0,4}\s+(?:квартир\p{L}*|житл\p{L}*|кімнат\p{L}*|комнат\p{L}*|будинок|дом)/iu;
 
@@ -29,11 +29,14 @@ function detectRooms(text: string): number | undefined {
 
 function detectPrice(text: string): Pick<Listing, "priceUah" | "currency"> {
   const candidates: Array<{ value: number; currency: "UAH" | "USD" | "EUR" }> = [];
-  const regex = /(?:[$€]\s*)?(\d{2,3}(?:[\s.,]\d{3})?|\d+(?:[.,]\d+)?)\s*(тис\.?|тыс\.?|k)?\s*(грн|uah|₴|дол(?:ар(?:ів|а)?)?|usd|\$|євро|eur|€)?/giu;
+  const regex = /(?:[$€]\s*)?(\d{1,3}(?:[\s.,]\d{3})+|\d{4,7}|\d+(?:[.,]\d+)?)\s*(тис\.?|тыс\.?|k)?\s*(грн|uah|₴|дол(?:ар(?:ів|а)?)?|usd|\$|євро|eur|€)?/giu;
   for (const match of text.matchAll(regex)) {
     if (!match[2] && !match[3]) continue;
-    const raw = match[1]!.replace(/\s/g, "").replace(",", ".");
-    let value = Number(raw);
+    const raw = match[1]!.replace(/\s/g, "");
+    const normalized = match[2]
+      ? raw.replace(",", ".")
+      : raw.replace(/[.,](?=\d{3}$)/, "");
+    let value = Number(normalized);
     if (!Number.isFinite(value)) continue;
     if (match[2]) value *= 1000;
     const token = `${match[0]} ${match[3] ?? ""}`.toLowerCase();

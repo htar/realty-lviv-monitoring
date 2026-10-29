@@ -10,6 +10,7 @@ Telegram-монітор на Node.js + TypeScript + teleproto + SQLite для о
 - [Експлуатація та усунення проблем](docs/OPERATIONS.md)
 - [Безпека і секрети](docs/SECURITY.md)
 - [Кросплатформне розгортання: Docker, Windows, Linux, macOS](docs/DEPLOYMENT.md)
+- [Тестування, coverage і CI](docs/TESTING.md)
 - [Дослідження Telegram-джерел](CHANNEL_RESEARCH.md)
 
 ## Уже налаштовано

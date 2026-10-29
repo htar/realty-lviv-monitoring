@@ -11,7 +11,8 @@
     "chat-id": "tsx src/get-chat-id.ts",
     "backfill": "tsx src/backfill.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts"
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-lines=98 --test-coverage-branches=90 --test-coverage-functions=90 --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "13.0.3",
