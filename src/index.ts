@@ -6,6 +6,7 @@ import { loadEnv, loadSearchConfig } from "./config.js";
 import { parseListing, matchesSearch } from "./parser.js";
 import { Store } from "./database.js";
 import { TelegramBot } from "./bot.js";
+import { scanHistory } from "./history.js";
 import type { IncomingMessage } from "./types.js";
 
 const env = loadEnv();
@@ -16,10 +17,12 @@ const savedFilters = store.loadFilters();
 if (savedFilters) config.filters = { ...config.filters, ...savedFilters };
 const savedChannels = store.loadChannels();
 if (savedChannels) config.channels = savedChannels;
-const bot = new TelegramBot(env.BOT_TOKEN, env.BOT_CHAT_ID);
 const client = new TelegramClient(new StringSession(env.TG_SESSION), env.TG_API_ID, env.TG_API_HASH, {
   connectionRetries: 10, autoReconnect: true
 });
+let bot: TelegramBot;
+bot = new TelegramBot(env.BOT_TOKEN, env.BOT_CHAT_ID,
+  async (days) => scanHistory({ client, config, store, bot, days, logger: log }));
 
 async function handle(event: any, edited: boolean): Promise<void> {
   try {

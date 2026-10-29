@@ -1,12 +1,16 @@
 import type { Listing, SearchConfig, IncomingMessage } from "./types.js";
 import type { Store } from "./database.js";
+import type { HistoryScanSummary } from "./history.js";
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 export class TelegramBot {
   private offset = 0;
   private stopped = false;
-  constructor(private readonly token: string, private readonly chatId: string) {}
+  private rescanInProgress = false;
+  constructor(private readonly token: string, private readonly chatId: string,
+    private readonly rescan?: (days: number) => Promise<HistoryScanSummary>,
+    private readonly retryDelayMs = 3000) {}
 
   private async call(method: string, body: Record<string, unknown>): Promise<any> {
     const response = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
@@ -122,10 +126,32 @@ export class TelegramBot {
           if (command === "/channelhelp") {
             text = "🔐 <b>Керування джерелами</b>\n/channels — активні канали\n/channeladd @username — додати або увімкнути\n/channelremove @username — вимкнути";
           }
+          if (command === "/rescan") {
+            const days = Number(args || "2");
+            if (!Number.isInteger(days) || days < 1 || days > 30) {
+              text = "❌ Вкажіть від 1 до 30 днів, наприклад: /rescan 2";
+            } else if (!this.rescan) {
+              text = "❌ Історичне сканування недоступне в цьому режимі";
+            } else if (this.rescanInProgress) {
+              text = "⏳ Історичне сканування вже виконується";
+            } else {
+              this.rescanInProgress = true;
+              await this.call("sendMessage", { chat_id: this.chatId,
+                text: `🔄 Перевіряю активні канали за ${days} дн.`, parse_mode: "HTML" });
+              try {
+                const summary = await this.rescan(days);
+                text = `✅ <b>Повторна перевірка завершена</b>\nПеріод: ${summary.firstDay} — ${summary.lastDay}\nПереглянуто: ${summary.scanned}\nНових версій: ${summary.newVersions}\nЗбігів: ${summary.matched}\nДоставлено/повторено: ${summary.notified}\nПомилок каналів: ${summary.failedChannels}`;
+              } catch (error) {
+                text = `❌ Сканування не завершено: ${error instanceof Error ? escapeHtml(error.message) : "невідома помилка"}`;
+              } finally {
+                this.rescanInProgress = false;
+              }
+            }
+          }
           if (text) await this.call("sendMessage", { chat_id: this.chatId, text, parse_mode: "HTML" });
         }
       } catch (error) {
-        if (!this.stopped) await new Promise((r) => setTimeout(r, 3000));
+        if (!this.stopped) await new Promise((r) => setTimeout(r, this.retryDelayMs));
       }
     }
   }
@@ -138,7 +164,7 @@ export class TelegramBot {
   }
 
   private helpText(): string {
-    return "✅ Real Estate Radar працює.\n\nКоманди:\n/filters — поточні фільтри\n/budget 22000 — максимальна ціна\n/rooms 1,2 — кімнатність\n/district Шевченківський — район; декілька через кому\n/strict on — вимагати район\n/strict off — дозволити оголошення без району\n/status — статистика\n/help — ця довідка";
+    return "✅ Real Estate Radar працює.\n\nКоманди:\n/filters — поточні фільтри\n/budget 22000 — максимальна ціна\n/rooms 1,2 — кімнатність\n/district Шевченківський — район; декілька через кому\n/strict on — вимагати район\n/strict off — дозволити оголошення без району\n/rescan 2 — знайти пропущені оголошення\n/status — статистика\n/help — ця довідка";
   }
 
   private parseChannelUsername(value: string): string | undefined {

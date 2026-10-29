@@ -53,6 +53,24 @@ export class Store {
       .run(new Date().toISOString(), channelId, Number(messageId), hash);
   }
 
+  pendingNotifications(limit = 500): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
+    const rows = this.db.prepare(`SELECT channel_id, message_id, content_hash, channel, text, link,
+      published_at, edited, parsed_json FROM messages
+      WHERE matched = 1 AND notified_at IS NULL ORDER BY published_at ASC LIMIT ?`).all(limit) as Array<any>;
+    const pending: Array<{ key: string; message: IncomingMessage; listing: Listing }> = [];
+    for (const row of rows) {
+      try {
+        pending.push({
+          key: `${row.channel_id}:${row.message_id}:${row.content_hash}`,
+          message: { channel: row.channel, channelId: row.channel_id, messageId: row.message_id,
+            text: row.text, link: row.link, date: new Date(row.published_at), edited: Boolean(row.edited) },
+          listing: JSON.parse(row.parsed_json) as Listing
+        });
+      } catch { /* Skip corrupt legacy rows; keep them visible for manual inspection. */ }
+    }
+    return pending;
+  }
+
   stats(): { processed: number; matched: number; notified: number } {
     return this.db.prepare(`SELECT COUNT(*) processed, SUM(matched) matched,
       SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END) notified FROM messages`).get() as any;

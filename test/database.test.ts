@@ -70,6 +70,29 @@ test("marks a saved version as notified", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("returns pending matched notifications and skips corrupt parsed rows", () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-monitoring-"));
+  const path = join(directory, "test.sqlite");
+  try {
+    const store = new Store(path);
+    const saved = store.save(message(), listing(), true);
+    store.save({ ...message("Не підходить"), messageId: 2 }, listing("Не підходить"), false);
+    let pending = store.pendingNotifications();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0]?.key, saved.key);
+    assert.equal(pending[0]?.message.channel, "test");
+    assert.equal(pending[0]?.listing.priceUah, 18000);
+    store.close();
+    const db = new Database(path);
+    db.prepare("UPDATE messages SET parsed_json = 'bad-json' WHERE message_id = 1").run();
+    db.close();
+    const reopened = new Store(path);
+    pending = reopened.pendingNotifications();
+    assert.deepEqual(pending, []);
+    reopened.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("returns undefined for settings that do not exist", () => {
   const directory = mkdtempSync(join(tmpdir(), "realty-monitoring-"));
   try {

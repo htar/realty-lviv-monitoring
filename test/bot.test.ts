@@ -85,7 +85,9 @@ test("processes authorized commands, ignores other chats and persists changes", 
     { update_id: 4, message: { chat: { id: 42 }, text: "/rooms 1,3;3" } },
     { update_id: 5, message: { chat: { id: 42 }, text: "/district Шевченківський, Франківський" } },
     { update_id: 6, message: { chat: { id: 42 }, text: "/strict maybe" } },
-    { update_id: 7, message: { chat: { id: 42 }, text: "/strict off" } },
+    { update_id: 7, message: { chat: { id: 42 }, text: "/strict on" } },
+    { update_id: 18, message: { chat: { id: 42 }, text: "/filters" } },
+    { update_id: 19, message: { chat: { id: 42 }, text: "/strict off" } },
     { update_id: 8, message: { chat: { id: 42 }, text: "/channeladd https://t.me/new_channel" } },
     { update_id: 9, message: { chat: { id: 42 }, text: "/channeladd @new_channel" } },
     { update_id: 10, message: { chat: { id: 42 }, text: "/channeladd bad!" } },
@@ -118,7 +120,7 @@ test("processes authorized commands, ignores other chats and persists changes", 
     assert.deepEqual(current.channels, ["new_channel"]);
     assert.deepEqual(store.loadChannels(), ["new_channel"]);
     assert.deepEqual(store.loadFilters(), current.filters);
-    assert.equal(sent.length, 16);
+    assert.equal(sent.length, 18);
     assert.ok(sent.every((body) => body.chat_id === "42"));
     assert.ok(sent.some((body) => String(body.text).includes("Активні джерела")));
     assert.ok(sent.some((body) => String(body.text).includes("Поточні фільтри")));
@@ -179,6 +181,95 @@ test("stops command polling cleanly after a network error", async () => {
   };
   try {
     await bot.runCommands(store, config());
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("retries command polling after a transient network error", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const bot = new TelegramBot("token", "42", undefined, 0);
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary");
+    bot.stop();
+    return response([]);
+  };
+  try {
+    await bot.runCommands(store, config());
+    assert.equal(attempts, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("runs an authorized historical rescan command", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  let requestedDays = 0;
+  const bot = new TelegramBot("token", "42", async (days) => {
+    requestedDays = days;
+    return { firstDay: "2026-10-28", lastDay: "2026-10-29", timeZone: "Europe/Kyiv",
+      scanned: 20, newVersions: 5, matched: 2, notified: 2, retriedPending: 2, failedChannels: 0 };
+  });
+  const sent: Array<Record<string, unknown>> = [];
+  let polls = 0;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith("/getUpdates")) {
+      polls += 1;
+      if (polls === 1) return response([
+        { update_id: 1, message: { chat: { id: 42 }, text: "/rescan 0" } },
+        { update_id: 2, message: { chat: { id: 42 }, text: "/rescan 2" } }
+      ]);
+      bot.stop();
+      return response([]);
+    }
+    sent.push(JSON.parse(String(init?.body)));
+    return response({ message_id: sent.length });
+  };
+  try {
+    await bot.runCommands(store, config());
+    assert.equal(requestedDays, 2);
+    assert.equal(sent.length, 3);
+    assert.ok(sent.some((body) => String(body.text).includes("від 1 до 30")));
+    assert.ok(sent.some((body) => String(body.text).includes("Перевіряю активні канали")));
+    assert.ok(sent.some((body) => String(body.text).includes("Повторна перевірка завершена")));
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("reports unavailable and failed rescans", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const bots = [new TelegramBot("token", "42"), new TelegramBot("token", "42", async () => { throw new Error("MTProto down <x>"); })];
+  try {
+    for (const [index, bot] of bots.entries()) {
+      const sent: Array<Record<string, unknown>> = [];
+      let polls = 0;
+      globalThis.fetch = async (url, init) => {
+        if (String(url).endsWith("/getUpdates")) {
+          polls += 1;
+          if (polls === 1) return response([{ update_id: index + 1, message: { chat: { id: 42 }, text: "/rescan 1" } }]);
+          bot!.stop();
+          return response([]);
+        }
+        sent.push(JSON.parse(String(init?.body)));
+        return response({ message_id: sent.length });
+      };
+      await bot!.runCommands(store, config());
+      const combined = sent.map((body) => String(body.text)).join(" ");
+      if (index === 0) assert.match(combined, /недоступне/);
+      else assert.match(combined, /MTProto down &lt;x&gt;/);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     store.close();

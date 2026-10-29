@@ -84,6 +84,7 @@ docker compose up -d --build
 /rooms 1,2
 /district Шевченківський
 /strict on
+/rescan 2
 /status
 /help
 ```
