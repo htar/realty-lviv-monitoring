@@ -21,6 +21,9 @@ export function splitChannelMessage(rest: string): [string, number] {
   return [rest.slice(0, at), Number(rest.slice(at + 1))];
 }
 
+// Upper bound for date ranges; ISO strings are compared as text, so it must stay a 4-digit year.
+const END_OF_TIME = new Date("9999-12-31T23:59:59.999Z");
+
 export class Store {
   private readonly db: Database.Database;
 
@@ -160,19 +163,20 @@ export class Store {
       link: row.link, listing: JSON.parse(row.parsed_json) as Listing }));
   }
 
-  /** Most common rejection reasons since the given date. */
-  topReasons(since: Date, limit = 10): Array<{ reason: string; count: number }> {
+  /** Most common rejection reasons in [since, until). */
+  topReasons(since: Date, limit = 10, until = END_OF_TIME): Array<{ reason: string; count: number }> {
     return this.db.prepare(`SELECT j.value reason, COUNT(*) count FROM messages, json_each(messages.reasons_json) j
-      WHERE messages.reasons_json IS NOT NULL AND published_at >= ? GROUP BY j.value ORDER BY count DESC LIMIT ?`)
-      .all(since.toISOString(), limit) as Array<{ reason: string; count: number }>;
+      WHERE messages.reasons_json IS NOT NULL AND published_at >= ? AND published_at < ?
+      GROUP BY j.value ORDER BY count DESC LIMIT ?`)
+      .all(since.toISOString(), until.toISOString(), limit) as Array<{ reason: string; count: number }>;
   }
 
-  /** Activity summary since the given date, for the daily digest. */
-  summarySince(since: Date): { processed: number; matched: number; notified: number; avgMatchedPrice?: number } {
+  /** Activity summary in [since, until), for the daily digest. */
+  summarySince(since: Date, until = END_OF_TIME): { processed: number; matched: number; notified: number; avgMatchedPrice?: number } {
     const row = this.db.prepare(`SELECT COUNT(*) processed, COALESCE(SUM(matched), 0) matched,
         SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END) notified,
         AVG(CASE WHEN matched = 1 THEN json_extract(parsed_json, '$.priceUah') END) avg
-      FROM messages WHERE published_at >= ?`).get(since.toISOString()) as any;
+      FROM messages WHERE published_at >= ? AND published_at < ?`).get(since.toISOString(), until.toISOString()) as any;
     return { processed: row.processed, matched: row.matched, notified: row.notified ?? 0,
       ...(row.avg ? { avgMatchedPrice: Math.round(row.avg) } : {}) };
   }

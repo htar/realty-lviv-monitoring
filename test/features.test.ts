@@ -149,20 +149,31 @@ test("scheduler refreshes rates, backs up and sends the digest once a day", with
   const backupDir = join(dir, "backups");
   const deps = { store, backupDir, send: async (t: string) => { sent.push(t); },
     fetchRates: async () => { rateCalls += 1; return rateCalls > 1; } };
-  const morning = new Date("2026-10-29T07:00:00Z"); // 09:00 Kyiv
-  const evening = new Date("2026-10-29T19:30:00Z"); // 21:30 Kyiv
-  await runScheduledJobs(deps, morning);
+  const night = new Date("2026-10-30T03:00:00Z"); // 05:00 Kyiv (winter time, UTC+2)
+  const morning = new Date("2026-10-30T05:30:00Z"); // 07:30 Kyiv
+  await runScheduledJobs(deps, night);
   assert.equal(sent.length, 0);
-  assert.deepEqual(readdirSync(backupDir), ["realty-2026-10-29.sqlite"]);
-  await runScheduledJobs(deps, evening);
-  await runScheduledJobs(deps, new Date(evening.getTime() + 60_000));
+  assert.deepEqual(readdirSync(backupDir), ["realty-2026-10-30.sqlite"]);
+  await runScheduledJobs(deps, morning);
+  await runScheduledJobs(deps, new Date(morning.getTime() + 60_000));
   assert.equal(rateCalls, 2); // first failed so it retried; second succeeded and is cached
   assert.equal(sent.length, 1);
   assert.match(sent[0]!, /Підсумок за 2026-10-29/);
 
   const failing = { ...deps, backupDir: join(dir, "test.sqlite", "nope"), send: async () => { throw new Error("down"); } };
-  await runScheduledJobs(failing, new Date("2026-10-30T19:30:00Z"));
-  assert.equal(store.getSetting("digest_date"), "2026-10-29");
+  await runScheduledJobs(failing, new Date("2026-10-31T05:30:00Z"));
+  assert.equal(store.getSetting("morning_digest_date"), "2026-10-29");
+}));
+
+test("digest counts only the reported day", withStore(async (store) => {
+  const cfg = config();
+  const posts = [[1, "2026-10-28T21:59:00Z"], [2, "2026-10-28T22:01:00Z"], [3, "2026-10-29T21:59:00Z"], [4, "2026-10-29T22:01:00Z"]] as const;
+  for (const [id, iso] of posts) {
+    const m = { ...message(id, LISTING), date: new Date(iso) };
+    store.save(m, parseListing(m.text, cfg), true);
+  }
+  // Kyiv 2026-10-29 (winter time, UTC+2) = [2026-10-28T22:00Z, 2026-10-29T22:00Z): only posts 2 and 3.
+  assert.match(digestText(store, "2026-10-29"), /Переглянуто: 2\n/);
 }));
 
 test("digest lists top reasons and backups are pruned", withStore(async (store, dir) => {

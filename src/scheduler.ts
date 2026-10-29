@@ -4,9 +4,9 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 import type { Store } from "./database.js";
 import { refreshRates } from "./rates.js";
-import { DEFAULT_TIME_ZONE, dateInTimeZone, zonedMidnight } from "./time.js";
+import { DEFAULT_TIME_ZONE, dateInTimeZone, zonedMidnight, addCalendarDays } from "./time.js";
 
-export const DIGEST_HOUR = 21;
+export const DIGEST_HOUR = 7;
 const RATES_EVERY_MS = 6 * 3_600_000;
 const KEEP_BACKUPS = 7;
 
@@ -22,9 +22,12 @@ export interface SchedulerDeps {
   fetchRates?: () => Promise<boolean>;
 }
 
+/** Summary of one whole Kyiv calendar day. */
 export function digestText(store: Store, day: string): string {
-  const s = store.summarySince(zonedMidnight(day));
-  const reasons = store.topReasons(zonedMidnight(day), 3);
+  const from = zonedMidnight(day);
+  const until = zonedMidnight(addCalendarDays(day, 1));
+  const s = store.summarySince(from, until);
+  const reasons = store.topReasons(from, 3, until);
   return [`🗓 <b>Підсумок за ${day}</b>`,
     `Переглянуто: ${s.processed}`, `Збігів: ${s.matched}`, `Надіслано: ${s.notified}`,
     ...(s.avgMatchedPrice ? [`Середня ціна збігів: ${s.avgMatchedPrice.toLocaleString("uk-UA")} грн`] : []),
@@ -74,10 +77,13 @@ export async function runScheduledJobs(deps: SchedulerDeps, now = new Date()): P
     }
   }
 
-  if (hourInKyiv(now) >= DIGEST_HOUR && store.getSetting("digest_date") !== day) {
+  // Morning report for the whole previous day. A separate setting key from the old evening
+  // digest, so the first morning after the switch still reports yesterday.
+  const reportDay = addCalendarDays(day, -1);
+  if (hourInKyiv(now) >= DIGEST_HOUR && store.getSetting("morning_digest_date") !== reportDay) {
     try {
-      await deps.send(digestText(store, day));
-      store.setSetting("digest_date", day);
+      await deps.send(digestText(store, reportDay));
+      store.setSetting("morning_digest_date", reportDay);
     } catch (error) {
       logger?.warn({ err: error }, "daily digest failed");
     }
