@@ -16,7 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node: [22, 24]
+        # Pin Node 22 to a patch version with a published better-sqlite3 binary.
+        # The newest 22.x can briefly force node-gyp builds before binaries land.
+        node: [22.22.3, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
