@@ -16,9 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        # Pin Node 22 to a patch version with a published better-sqlite3 binary.
-        # The newest 22.x can briefly force node-gyp builds before binaries land.
+        # Keep the Node 22 compatibility check deterministic.
         node: [22.22.3, 24]
+        exclude:
+          # The current Windows image only exposes VS 18, which node-gyp 11
+          # cannot detect. Windows remains covered by Node 24.
+          - os: windows-latest
+            node: 22.22.3
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
