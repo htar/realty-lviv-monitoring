@@ -1,5 +1,6 @@
 import type { Listing, PropertyType, SearchConfig } from "./types.js";
 import { getRate } from "./rates.js";
+import { defaultStreetIndex } from "./streets.js";
 
 const normalize = (value: string) => value
   .toLocaleLowerCase("uk-UA")
@@ -15,10 +16,6 @@ const ROOM = /(?:(?:оренд\p{L}*|здам|здається|сдам|сдае
 const BROKER = /(рієлтор|риелтор|агентств\p{L}*|комісі[яї]|комисси[яи]|посередник)/iu;
 const DEMAND_POST = /(?:шукаю|шукаємо|шукає|потрібна|потрібне|потрібен|зніму|ищу|ищем|ищет|нужна|нужно|нужен|сниму)(?:\s+[^\s,.!?]+){0,4}\s+(?:квартир\p{L}*|житл\p{L}*|кімнат\p{L}*|комнат\p{L}*|будинок|дом)/iu;
 
-/** Microdistricts that belong to a district but are often written without the district name. */
-const DEFAULT_DISTRICT_ALIASES: Record<string, string[]> = {
-  "Шевченківський": ["замарстин", "голоск", "збоїщ", "клепарів", "варшавськ", "шевченківськ", "шевченковск"]
-};
 
 function detectRooms(text: string): number | undefined {
   const numeric = text.match(/(?:^|\s)([1-9])\s*[-–]?\s*(?:х\s*)?(?:кімн|комн|к\b)/iu);
@@ -71,12 +68,25 @@ export function detectPhones(text: string): string[] {
   return [...phones];
 }
 
-function detectDistrict(text: string, config: SearchConfig): string | undefined {
-  const aliases = { ...DEFAULT_DISTRICT_ALIASES, ...config.filters.districtAliases };
-  return config.filters.districts.find((district) => {
-    const words = [normalize(district).replace(/ський$/u, "ськ"), ...(aliases[district] ?? []).map(normalize)];
-    return words.some((word) => word && text.includes(word));
-  });
+/** "Галицький район", "Сихівський р-н" (also Russian spellings) — an explicitly named Lviv district. */
+const DISTRICT_MENTION = /(галицьк|галицк|залізничн|железнодорожн|личаківськ|лычаковск|личаковск|сихівськ|сыховск|сиховск|франківськ|франковск|шевченківськ|шевченковск)\p{L}*\s+(?:район|р-н)/iu;
+
+function detectDistrict(text: string, config: SearchConfig, streets = defaultStreetIndex()): Pick<Listing, "district" | "location"> {
+  const { districts } = config.filters;
+  const named = districts.find((district) => text.includes(normalize(district).replace(/ський$/u, "ськ")))
+    ?? (/шевченковск/u.test(text) ? districts.find((d) => normalize(d).startsWith("шевчен")) : undefined);
+  if (named) return { district: named };
+  // The post names some other district explicitly: trust it over street guesses.
+  if (DISTRICT_MENTION.test(text)) return {};
+  const aliases = config.filters.districtAliases ?? {};
+  const aliased = districts.find((district) => (aliases[district] ?? []).some((word) => word.trim() && text.includes(normalize(word))));
+  if (aliased) return { district: aliased };
+  // Street or locality; a street crossing several districts counts for each of them.
+  for (const match of streets?.find(text) ?? []) {
+    const district = districts.find((d) => match.districts.includes(d));
+    if (district) return { district, location: match.label };
+  }
+  return {};
 }
 
 export function parseListing(rawText: string, config: SearchConfig): Listing {
@@ -86,7 +96,7 @@ export function parseListing(rawText: string, config: SearchConfig): Listing {
     dealType: RENT.test(text) && !SALE.test(text) ? "rent" : SALE.test(text) ? "sale" : "unknown",
     propertyType: detectPropertyType(text),
     city: /(львів|львов|у львові|во львове)/iu.test(text) ? "Львів" : undefined,
-    district: detectDistrict(text, config),
+    ...detectDistrict(text, config),
     rooms: detectRooms(text),
     ...detectPrice(text),
     ...(phones.length ? { phones } : {}),

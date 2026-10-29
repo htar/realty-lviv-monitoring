@@ -10,6 +10,8 @@
     "session:qr": "tsx src/create-session-qr.ts",
     "chat-id": "tsx src/get-chat-id.ts",
     "backfill": "tsx src/backfill.ts",
+    "streets:build": "tsx scripts/build-streets.ts",
+    "streets:try": "tsx scripts/try-streets.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
     "test:coverage": "node --experimental-test-coverage --test-coverage-lines=98 --test-coverage-branches=90 --test-coverage-functions=90 --import tsx --test test/**/*.test.ts"

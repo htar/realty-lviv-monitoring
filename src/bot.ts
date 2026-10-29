@@ -33,6 +33,7 @@ export class TelegramBot {
     const lines = [
       header, "",
       `<b>${listing.rooms}-кімнатна · ${escapeHtml(listing.district ?? "Львів")}</b>`,
+      ...(listing.location ? [`📍 ${escapeHtml(listing.location)} (район визначено за адресою)`] : []),
       `💰 <b>${price} грн/міс.</b>${original}`,
       message.channelId.startsWith("site:") ? `🌐 ${escapeHtml(message.channel)}` : `📣 @${escapeHtml(message.channel)}`,
       ...(listing.phones?.length ? [`📞 ${listing.phones.join(", ")}`] : []),

@@ -25,6 +25,8 @@ export interface Listing {
   propertyType: PropertyType;
   city?: string;
   district?: string;
+  /** Street or locality the district was inferred from, e.g. "вулиця Замарстинівська". */
+  location?: string;
   rooms?: number;
   priceUah?: number;
   currency?: "UAH" | "USD" | "EUR";
