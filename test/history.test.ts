@@ -36,6 +36,12 @@ test("scans channel history, isolates channel errors and delivers every pending 
   const delivered: number[] = [];
   const bot = { async sendListing(message: IncomingMessage) { delivered.push(message.messageId); } } as unknown as TelegramBot;
   try {
+    const preview = await scanHistory({ client, config, store, bot, days: 2, deliver: false,
+      now: new Date("2026-10-29T12:00:00Z") });
+    assert.equal(preview.newVersions, 1);
+    assert.equal(preview.matched, 1);
+    assert.deepEqual(store.stats(), { processed: 1, matched: 1, notified: 0 });
+
     const summary = await scanHistory({ client, config, store, bot, days: 2,
       now: new Date("2026-10-29T12:00:00Z") });
     assert.deepEqual(delivered.sort((a, b) => a - b), [9, 10]);

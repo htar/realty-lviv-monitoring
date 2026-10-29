@@ -1,4 +1,5 @@
 import { readdirSync, rmSync } from "node:fs";
+import Database from "better-sqlite3";
 import { join } from "node:path";
 import type { Logger } from "pino";
 import type { Store } from "./database.js";
@@ -37,6 +38,17 @@ export function pruneBackups(dir: string, keep = KEEP_BACKUPS): void {
   for (const name of files.slice(0, Math.max(0, files.length - keep))) rmSync(join(dir, name));
 }
 
+export function verifyBackup(path: string): boolean {
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  try { return db.pragma("integrity_check", { simple: true }) === "ok"; }
+  finally {
+    db.close();
+    // SQLite may create empty WAL sidecars while opening a WAL-mode backup.
+    rmSync(`${path}-shm`, { force: true });
+    rmSync(`${path}-wal`, { force: true });
+  }
+}
+
 /** One scheduler pass; safe to call often, each job runs at most once per day (or per rate period). */
 export async function runScheduledJobs(deps: SchedulerDeps, now = new Date()): Promise<void> {
   const { store, logger } = deps;
@@ -51,7 +63,9 @@ export async function runScheduledJobs(deps: SchedulerDeps, now = new Date()): P
 
   if (store.getSetting("backup_date") !== day) {
     try {
-      await store.backup(join(deps.backupDir, `realty-${day}.sqlite`));
+      const backupPath = join(deps.backupDir, `realty-${day}.sqlite`);
+      await store.backup(backupPath);
+      if (!verifyBackup(backupPath)) throw new Error("backup integrity_check failed");
       pruneBackups(deps.backupDir);
       store.setSetting("backup_date", day);
       logger?.info({ day }, "database backup created");

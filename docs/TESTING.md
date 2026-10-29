@@ -52,6 +52,7 @@ npm run test:coverage
 - чиста зупинка polling після мережевої помилки.
 - retry після тимчасової мережевої помилки;
 - `/rescan`, невалідний діапазон, недоступний scanner і помилка MTProto;
+- `/missed`, `/health`, feedback-кнопки, delivery retry/backoff та SQLite integrity check;
 - повторна доставка `matched=1` / `notified_at IS NULL`;
 - ізоляція помилки одного каналу під час історичного сканування.
 

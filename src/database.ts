@@ -43,10 +43,32 @@ export class Store {
         created_at TEXT NOT NULL,
         PRIMARY KEY (channel_id, message_id)
       );
+      CREATE TABLE IF NOT EXISTS feedback (
+        channel_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        verdict TEXT NOT NULL CHECK(verdict IN ('good', 'bad')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (channel_id, message_id)
+      );
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        action TEXT NOT NULL,
+        details TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
     const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "reasons_json")) {
       this.db.exec("ALTER TABLE messages ADD COLUMN reasons_json TEXT");
+    }
+    if (!columns.some((column) => column.name === "retry_count")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!columns.some((column) => column.name === "next_attempt_at")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN next_attempt_at TEXT");
+    }
+    if (!columns.some((column) => column.name === "last_delivery_error")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN last_delivery_error TEXT");
     }
   }
 
@@ -59,6 +81,12 @@ export class Store {
     `).run(message.channelId, message.messageId, hash, message.channel, message.text, message.link,
       message.date.toISOString(), Number(message.edited), Number(matched), JSON.stringify(listing), JSON.stringify(reasons));
     return { isNewVersion: result.changes === 1, key: `${message.channelId}:${message.messageId}:${hash}` };
+  }
+
+  hasVersion(message: IncomingMessage): boolean {
+    const hash = createHash("sha256").update(message.text).digest("hex");
+    return Boolean(this.db.prepare(`SELECT 1 FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash = ?`)
+      .get(message.channelId, message.messageId, hash));
   }
 
   /** UAH price of the most recent earlier version of the same post, if it had one. */
@@ -88,6 +116,22 @@ export class Store {
 
   removeFavorite(channelId: string, messageId: number): boolean {
     return this.db.prepare("DELETE FROM favorites WHERE channel_id = ? AND message_id = ?").run(channelId, messageId).changes === 1;
+  }
+
+  recordFeedback(channelId: string, messageId: number, verdict: "good" | "bad"): void {
+    this.db.prepare(`INSERT INTO feedback (channel_id, message_id, verdict, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(channel_id, message_id) DO UPDATE SET verdict = excluded.verdict, created_at = excluded.created_at`)
+      .run(channelId, messageId, verdict, new Date().toISOString());
+  }
+
+  feedbackStats(): { good: number; bad: number } {
+    const row = this.db.prepare(`SELECT SUM(verdict = 'good') good, SUM(verdict = 'bad') bad FROM feedback`).get() as any;
+    return { good: row.good ?? 0, bad: row.bad ?? 0 };
+  }
+
+  audit(action: string, details: string): void {
+    this.db.prepare("INSERT INTO audit_log (action, details, created_at) VALUES (?, ?, ?)")
+      .run(action, details, new Date().toISOString());
   }
 
   favorites(limit = 30): Array<{ channelId: string; messageId: number; link: string; listing: Listing }> {
@@ -132,16 +176,35 @@ export class Store {
     await this.db.backup(resolve(destination));
   }
 
+  integrityCheck(): boolean {
+    return (this.db.pragma("integrity_check", { simple: true }) as string) === "ok";
+  }
+
   markNotified(key: string): void {
     const [channelId, messageId, hash] = key.split(":");
     this.db.prepare("UPDATE messages SET notified_at = ? WHERE channel_id = ? AND message_id = ? AND content_hash = ?")
       .run(new Date().toISOString(), channelId, Number(messageId), hash);
+    this.db.prepare(`UPDATE messages SET retry_count = 0, next_attempt_at = NULL, last_delivery_error = NULL
+      WHERE channel_id = ? AND message_id = ? AND content_hash = ?`).run(channelId, Number(messageId), hash);
+  }
+
+  markDeliveryFailed(key: string, error: unknown, now = new Date()): void {
+    const [channelId, messageId, hash] = key.split(":");
+    const row = this.db.prepare(`SELECT retry_count FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash = ?`)
+      .get(channelId, Number(messageId), hash) as { retry_count: number } | undefined;
+    const retry = (row?.retry_count ?? 0) + 1;
+    const delays = [10_000, 60_000, 300_000, 1_800_000];
+    const next = new Date(now.getTime() + delays[Math.min(retry - 1, delays.length - 1)]!).toISOString();
+    this.db.prepare(`UPDATE messages SET retry_count = ?, next_attempt_at = ?, last_delivery_error = ?
+      WHERE channel_id = ? AND message_id = ? AND content_hash = ?`)
+      .run(retry, next, error instanceof Error ? error.message : String(error), channelId, Number(messageId), hash);
   }
 
   pendingNotifications(limit = 500): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
     const rows = this.db.prepare(`SELECT channel_id, message_id, content_hash, channel, text, link,
       published_at, edited, parsed_json FROM messages
-      WHERE matched = 1 AND notified_at IS NULL ORDER BY published_at ASC LIMIT ?`).all(limit) as Array<any>;
+      WHERE matched = 1 AND notified_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+      ORDER BY published_at ASC LIMIT ?`).all(new Date().toISOString(), limit) as Array<any>;
     const pending: Array<{ key: string; message: IncomingMessage; listing: Listing }> = [];
     for (const row of rows) {
       try {
@@ -159,6 +222,17 @@ export class Store {
   stats(): { processed: number; matched: number; notified: number } {
     return this.db.prepare(`SELECT COUNT(*) processed, SUM(matched) matched,
       SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END) notified FROM messages`).get() as any;
+  }
+
+  deliveryStats(): { pending: number; delayed: number; lastMessageAt?: string; lastNotifiedAt?: string } {
+    const row = this.db.prepare(`SELECT
+      SUM(matched = 1 AND notified_at IS NULL) pending,
+      SUM(matched = 1 AND notified_at IS NULL AND next_attempt_at > ?) delayed,
+      MAX(published_at) last_message_at, MAX(notified_at) last_notified_at FROM messages`)
+      .get(new Date().toISOString()) as any;
+    return { pending: row.pending ?? 0, delayed: row.delayed ?? 0,
+      ...(row.last_message_at ? { lastMessageAt: row.last_message_at } : {}),
+      ...(row.last_notified_at ? { lastNotifiedAt: row.last_notified_at } : {}) };
   }
 
   loadFilters(): SearchConfig["filters"] | undefined {

@@ -58,16 +58,19 @@ USD/EUR визначаються, але не конвертуються й не
 
 За замовчуванням: `data/realty.sqlite`, journal mode WAL.
 
-`messages` зберігає IDs, hash, username, текст, посилання, дату, ознаку редагування, результат фільтра, JSON парсера та час сповіщення. Первинний ключ: `channel_id`, `message_id`, `content_hash`.
+`messages` зберігає IDs, hash, username, текст, посилання, дату, ознаку редагування, результат фільтра, JSON парсера, час сповіщення та стан retry. Первинний ключ: `channel_id`, `message_id`, `content_hash`.
 
 `settings` — key-value таблиця. Ключ `filters` зберігає JSON фільтрів, `channels` — JSON активних username. Ці значення перекривають `config/search.json`.
+
+Рядок `matched=1` без `notified_at` є надійною чергою доставки. `retry_count`, `next_attempt_at` і `last_delivery_error` реалізують backoff. `feedback` зберігає оцінки релевантності, `audit_log` — зміни фільтрів і джерел, а `settings` також містить checkpoints каналів, heartbeat і час recovery.
 
 ## Надійність і межі
 
 - MTProto auto-reconnect і 10 connection retries;
 - Bot API timeout 35 секунд;
 - повтор long polling через 3 секунди після помилки;
+- автоматичний backfill після старту та кожні 6 годин;
+- delivery queue з повторами 10 с → 1 хв → 5 хв → 30 хв;
+- SQLite integrity check резервних копій;
 - SIGINT/SIGTERM закривають Telegram і SQLite;
 - дедуплікація повторної доставки.
-
-MVP не має transactional outbox. Якщо процес завершиться між відправленням Bot API та `markNotified`, запис уже існуватиме й автоматичної повторної відправки не буде. Для production потрібна outbox-черга з retries.

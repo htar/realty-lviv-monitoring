@@ -64,6 +64,8 @@ test("marks a saved version as notified", () => {
   try {
     const store = new Store(join(directory, "test.sqlite"));
     const saved = store.save(message(), listing(), true);
+    assert.equal(store.hasVersion(message()), true);
+    assert.equal(store.hasVersion({ ...message(), messageId: 2 }), false);
     store.markNotified(saved.key);
     assert.deepEqual(store.stats(), { processed: 1, matched: 1, notified: 1 });
     store.close();
@@ -133,5 +135,26 @@ test("filters non-string values from stored channels", () => {
     const reopened = new Store(path);
     assert.deepEqual(reopened.loadChannels(), ["valid_channel"]);
     reopened.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("tracks delivery retries, health data, feedback and integrity", () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-monitoring-"));
+  try {
+    const store = new Store(join(directory, "test.sqlite"));
+    const saved = store.save(message(), listing(), true);
+    assert.equal(store.integrityCheck(), true);
+    assert.deepEqual(store.feedbackStats(), { good: 0, bad: 0 });
+    store.recordFeedback("100", 1, "good");
+    store.recordFeedback("100", 1, "bad");
+    assert.deepEqual(store.feedbackStats(), { good: 0, bad: 1 });
+    store.audit("test", "details");
+    store.markDeliveryFailed(saved.key, new Error("offline"));
+    assert.equal(store.pendingNotifications().length, 0);
+    assert.deepEqual(store.deliveryStats().pending, 1);
+    assert.deepEqual(store.deliveryStats().delayed, 1);
+    store.markNotified(saved.key);
+    assert.deepEqual(store.deliveryStats().pending, 0);
+    store.close();
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

@@ -20,6 +20,25 @@ export interface HistoryScanSummary {
   failedNotifications: number;
 }
 
+export async function flushPendingNotifications(options: {
+  store: Store; bot: TelegramBot; logger?: Logger; now?: Date;
+}): Promise<{ notified: number; failed: number }> {
+  const { store, bot, logger, now = new Date() } = options;
+  let notified = 0;
+  let failed = 0;
+  for (const pending of store.pendingNotifications()) {
+    try {
+      const result = await deliverListing({ store, bot, message: pending.message, listing: pending.listing, key: pending.key });
+      if (result !== "duplicate") notified += 1;
+    } catch (error) {
+      failed += 1;
+      store.markDeliveryFailed(pending.key, error, now);
+      logger?.warn({ link: pending.message.link, err: error }, "pending notification failed");
+    }
+  }
+  return { notified, failed };
+}
+
 export async function scanHistory(options: {
   client: TelegramClient;
   config: SearchConfig;
@@ -28,8 +47,9 @@ export async function scanHistory(options: {
   days: number;
   logger?: Logger;
   now?: Date;
+  deliver?: boolean;
 }): Promise<HistoryScanSummary> {
-  const { client, config, store, bot, days, logger, now = new Date() } = options;
+  const { client, config, store, bot, days, logger, now = new Date(), deliver = true } = options;
   if (!Number.isInteger(days) || days < 1 || days > 30) throw new Error("Кількість днів має бути від 1 до 30");
   const today = dateInTimeZone(now, DEFAULT_TIME_ZONE);
   const firstDay = addCalendarDays(today, -(days - 1));
@@ -42,6 +62,7 @@ export async function scanHistory(options: {
   for (const channel of config.channels) {
     let channelScanned = 0;
     let channelMatched = 0;
+    let newest: { messageId: number; date: string } | undefined;
     try {
       for await (const telegramMessage of client.iterMessages(`@${channel}`, {
         limit: 1000, offsetDate: Math.floor(to.getTime() / 1000), waitTime: 1
@@ -51,6 +72,7 @@ export async function scanHistory(options: {
         if (date >= to) continue;
         const text = telegramMessage.message?.trim();
         if (!text) continue;
+        newest ??= { messageId: Number(telegramMessage.id), date: date.toISOString() };
         summary.scanned += 1;
         channelScanned += 1;
         const incoming: IncomingMessage = { channel, channelId: String(telegramMessage.chatId ?? channel),
@@ -58,6 +80,12 @@ export async function scanHistory(options: {
           edited: Boolean(telegramMessage.editDate) };
         const listing = parseListing(text, config);
         const result = matchesSearch(listing, config);
+        if (!deliver) {
+          if (store.hasVersion(incoming)) continue;
+          summary.newVersions += 1;
+          if (result.matches) { summary.matched += 1; channelMatched += 1; }
+          continue;
+        }
         const saved = store.save(incoming, listing, result.matches, result.reasons);
         if (!saved.isNewVersion) continue;
         summary.newVersions += 1;
@@ -65,6 +93,7 @@ export async function scanHistory(options: {
         summary.matched += 1;
         channelMatched += 1;
       }
+      if (newest) store.setSetting(`checkpoint:${channel.toLowerCase()}`, JSON.stringify(newest));
       logger?.info({ channel, scanned: channelScanned, matched: channelMatched }, "channel scan completed");
     } catch (error) {
       summary.failedChannels += 1;
@@ -72,16 +101,10 @@ export async function scanHistory(options: {
     }
   }
 
-  for (const pending of store.pendingNotifications()) {
-    try {
-      const result = await deliverListing({ store, bot, message: pending.message, listing: pending.listing, key: pending.key });
-      if (result === "duplicate") continue;
-      summary.notified += 1;
-      summary.retriedPending += 1;
-    } catch (error) {
-      summary.failedNotifications += 1;
-      logger?.warn({ link: pending.message.link, err: error }, "pending notification failed");
-    }
-  }
+  if (!deliver) return summary;
+  const flushed = await flushPendingNotifications({ store, bot, logger, now });
+  summary.notified = flushed.notified;
+  summary.retriedPending = flushed.notified;
+  summary.failedNotifications = flushed.failed;
   return summary;
 }

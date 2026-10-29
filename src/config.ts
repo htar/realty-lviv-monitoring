@@ -12,7 +12,9 @@ const envSchema = z.object({
   DATABASE_PATH: z.string().default("./data/realty.sqlite"),
   LOG_LEVEL: z.string().default("info"),
   // How often to poll listing sites (rieltor.ua, real-estate.lviv.ua); 0 disables them.
-  SITES_INTERVAL_MIN: z.coerce.number().min(0).default(15)
+  SITES_INTERVAL_MIN: z.coerce.number().min(0).default(15),
+  AUTO_RESCAN_DAYS: z.coerce.number().int().min(1).max(30).default(2),
+  RESCAN_INTERVAL_HOURS: z.coerce.number().min(0).default(6)
 });
 
 const searchSchema = z.object({

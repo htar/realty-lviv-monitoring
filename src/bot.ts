@@ -4,13 +4,23 @@ import type { HistoryScanSummary } from "./history.js";
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+export interface RuntimeHealth {
+  startedAt: Date;
+  telegramConnected: boolean;
+  lastUpdateAt?: Date;
+  lastRecoveryAt?: Date;
+  healthFailures: number;
+}
+
 export class TelegramBot {
   private offset = 0;
   private stopped = false;
   private activeRescan?: Promise<void>;
   constructor(private readonly token: string, private readonly chatId: string,
     private readonly rescan?: (days: number) => Promise<HistoryScanSummary>,
-    private readonly retryDelayMs = 3000) {}
+    private readonly retryDelayMs = 3000,
+    private readonly inspectMissed?: (days: number) => Promise<HistoryScanSummary>,
+    private readonly health?: () => RuntimeHealth) {}
 
   private async call(method: string, body: Record<string, unknown>): Promise<any> {
     const response = await fetch(`https://api.telegram.org/bot${this.token}/${method}`, {
@@ -46,6 +56,9 @@ export class TelegramBot {
       reply_markup: { inline_keyboard: [[
         { text: "⭐ Зберегти", callback_data: `fav:${message.channelId}:${message.messageId}`.slice(0, 64) },
         { text: "🙈 Сховати", callback_data: "hide" }
+      ], [
+        { text: "✅ Підходить", callback_data: `quality:good:${message.channelId}:${message.messageId}`.slice(0, 64) },
+        { text: "❌ Не підходить", callback_data: `quality:bad:${message.channelId}:${message.messageId}`.slice(0, 64) }
       ]] }
     });
   }
@@ -60,6 +73,12 @@ export class TelegramBot {
     } else if (data.startsWith("fav:")) {
       const [, channelId, messageId] = data.split(":");
       answer = store.addFavorite(channelId!, Number(messageId)) ? "⭐ Збережено. Список: /saved" : "Уже в збережених";
+    } else if (data.startsWith("quality:")) {
+      const [, verdict, channelId, messageId] = data.split(":");
+      if ((verdict === "good" || verdict === "bad") && channelId && messageId) {
+        store.recordFeedback(channelId, Number(messageId), verdict);
+        answer = verdict === "good" ? "✅ Дякую, збіг підтверджено" : "❌ Дякую, врахуємо як хибний збіг";
+      }
     }
     await this.call("answerCallbackQuery", { callback_query_id: query.id, text: answer });
   }
@@ -102,6 +121,7 @@ export class TelegramBot {
   private updateFilters(store: Store, config: SearchConfig, patch: Partial<SearchConfig["filters"]>): void {
     Object.assign(config.filters, patch);
     store.saveFilters(config.filters);
+    store.audit("filters.update", JSON.stringify(patch));
   }
 
   private readonly commands: Record<string, (this: TelegramBot, args: string, store: Store, config: SearchConfig) => string | undefined> = {
@@ -110,7 +130,15 @@ export class TelegramBot {
     "/filters": (_args, _store, config) => this.filtersText(config),
     "/status": (_args, store) => {
       const s = store.stats();
-      return `📊 Оброблено: ${s.processed}\nЗбігів: ${s.matched ?? 0}\nНадіслано: ${s.notified ?? 0}`;
+      const q = store.deliveryStats();
+      const feedback = store.feedbackStats();
+      return `📊 Оброблено: ${s.processed}\nЗбігів: ${s.matched ?? 0}\nНадіслано: ${s.notified ?? 0}\nУ черзі: ${q.pending} (відкладено: ${q.delayed})\nОцінки: ✅ ${feedback.good} / ❌ ${feedback.bad}`;
+    },
+    "/health": (_args, store) => {
+      const runtime = this.health?.();
+      const queue = store.deliveryStats();
+      const uptime = runtime ? Math.floor((Date.now() - runtime.startedAt.getTime()) / 60_000) : undefined;
+      return `🩺 <b>Стан монітора</b>\nTelegram: ${runtime?.telegramConnected === false ? "❌ проблема" : "✅ працює"}\nUptime: ${uptime ?? "—"} хв.\nHealth-помилки: ${runtime?.healthFailures ?? 0}\nОстаннє повідомлення: ${queue.lastMessageAt ?? "—"}\nОстання доставка: ${queue.lastNotifiedAt ?? "—"}\nЧерга: ${queue.pending}\nОстаннє відновлення: ${runtime?.lastRecoveryAt?.toISOString() ?? "—"}`;
     },
     "/budget": (args, store, config) => {
       const value = Number(args.replace(/\s/g, ""));
@@ -147,6 +175,7 @@ export class TelegramBot {
       if (config.channels.some((item) => item.toLowerCase() === channel.toLowerCase())) return `ℹ️ @${escapeHtml(channel)} уже активний`;
       config.channels.push(channel);
       store.saveChannels(config.channels);
+      store.audit("channel.add", channel);
       return `✅ Канал @${escapeHtml(channel)} додано до моніторингу`;
     },
     "/channelremove": (args, store, config) => {
@@ -156,6 +185,7 @@ export class TelegramBot {
       config.channels = config.channels.filter((item) => item.toLowerCase() !== channel.toLowerCase());
       if (config.channels.length === before) return `ℹ️ @${escapeHtml(channel)} не був активним`;
       store.saveChannels(config.channels);
+      store.audit("channel.remove", channel);
       return `✅ Канал @${escapeHtml(channel)} вимкнено`;
     },
     "/exclude": (args, store, config) => {
@@ -207,8 +237,27 @@ export class TelegramBot {
       if (this.activeRescan) return "⏳ Історичне сканування вже виконується";
       this.activeRescan = this.runRescan(days).finally(() => { this.activeRescan = undefined; });
       return undefined;
+    },
+    "/missed": (args) => {
+      const days = Number(args || "2");
+      if (!Number.isInteger(days) || days < 1 || days > 30) return "❌ Вкажіть від 1 до 30 днів, наприклад: /missed 2";
+      if (!this.inspectMissed) return "❌ Перевірка пропусків недоступна в цьому режимі";
+      if (this.activeRescan) return "⏳ Перевірка вже виконується";
+      this.activeRescan = this.runMissed(days).finally(() => { this.activeRescan = undefined; });
+      return undefined;
     }
   };
+
+  private async runMissed(days: number): Promise<void> {
+    try {
+      await this.send(`🔎 Шукаю пропущені оголошення за ${days} дн. без надсилання.`);
+      const summary = await this.inspectMissed!(days);
+      const pending = summary.matched;
+      await this.send(`🔎 <b>Перевірку завершено</b>\nПереглянуто: ${summary.scanned}\nНових версій: ${summary.newVersions}\nНових відповідних: ${pending}\nПомилок каналів: ${summary.failedChannels}\nДля доставлення виконайте /rescan ${days}`);
+    } catch (error) {
+      await this.send(`❌ Перевірка не завершена: ${error instanceof Error ? escapeHtml(error.message) : "невідома помилка"}`);
+    }
+  }
 
   // Runs in the background so other commands keep working during a long scan.
   private async runRescan(days: number): Promise<void> {
@@ -232,7 +281,7 @@ export class TelegramBot {
   }
 
   private helpText(): string {
-    return "✅ Real Estate Radar працює.\n\nКоманди:\n/filters — поточні фільтри\n/budget 22000 — максимальна ціна\n/rooms 1,2 — кімнатність\n/district Шевченківський — район; декілька через кому\n/strict on — вимагати район\n/strict off — дозволити оголошення без району\n/nobroker on — приховувати посередників\n/exclude подобово, хостел — слова-виключення\n/saved — збережені оголошення\n/why 7 — чому відхилялись оголошення\n/rescan 2 — знайти пропущені оголошення\n/status — статистика\n/help — ця довідка";
+    return "✅ Real Estate Radar працює.\n\nКоманди:\n/filters — поточні фільтри\n/budget 22000 — максимальна ціна\n/rooms 1,2 — кімнатність\n/district Шевченківський — район; декілька через кому\n/strict on — вимагати район\n/strict off — дозволити оголошення без району\n/nobroker on — приховувати посередників\n/exclude подобово, хостел — слова-виключення\n/saved — збережені оголошення\n/why 7 — чому відхилялись оголошення\n/missed 2 — перевірити пропуски без доставки\n/rescan 2 — знайти й доставити пропущені\n/health — стан listener-а і черги\n/status — статистика\n/help — ця довідка";
   }
 
   private parseChannelUsername(value: string): string | undefined {

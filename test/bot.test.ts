@@ -276,3 +276,49 @@ test("reports unavailable and failed rescans", async () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("reports health, inspects missed listings and stores quality feedback", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "realty-bot-"));
+  const store = new Store(join(directory, "test.sqlite"));
+  const inspected: number[] = [];
+  const bot = new TelegramBot("token", "42", undefined, 0, async (days) => {
+    inspected.push(days);
+    return { firstDay: "2026-10-28", lastDay: "2026-10-29", timeZone: "Europe/Kyiv",
+      scanned: 12, newVersions: 3, matched: 2, notified: 0, retriedPending: 0, failedChannels: 1, failedNotifications: 0 };
+  }, () => ({ startedAt: new Date(Date.now() - 120_000), telegramConnected: true,
+    lastUpdateAt: new Date(), lastRecoveryAt: new Date(), healthFailures: 0 }));
+  const sent: any[] = [];
+  let polls = 0;
+  globalThis.fetch = async (url, init) => {
+    const method = String(url).split("/").pop()!;
+    const body = JSON.parse(String(init?.body));
+    if (method === "getUpdates") {
+      polls += 1;
+      if (polls === 1) return response([
+        { update_id: 1, callback_query: { id: "quality", data: "quality:bad:100:1", message: { chat: { id: 42 } } } },
+        { update_id: 2, message: { chat: { id: 42 }, text: "/health" } },
+        { update_id: 3, message: { chat: { id: 42 }, text: "/status" } },
+        { update_id: 4, message: { chat: { id: 42 }, text: "/missed 0" } },
+        { update_id: 5, message: { chat: { id: 42 }, text: "/missed 2" } }
+      ]);
+      bot.stop();
+      return response([]);
+    }
+    sent.push(body);
+    return response(true);
+  };
+  try {
+    await bot.runCommands(store, config());
+    assert.deepEqual(inspected, [2]);
+    assert.deepEqual(store.feedbackStats(), { good: 0, bad: 1 });
+    const text = sent.map((item) => String(item.text)).join("\n");
+    assert.match(text, /Стан монітора/);
+    assert.match(text, /Оцінки/);
+    assert.match(text, /від 1 до 30/);
+    assert.match(text, /Перевірку завершено/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
