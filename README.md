@@ -25,11 +25,27 @@ npm install
 
 5. Заповніть у `.env` `TG_API_ID`, `TG_API_HASH`, `BOT_TOKEN`, `BOT_CHAT_ID`. Потім створіть користувацьку сесію:
 
+Щоб отримати `BOT_CHAT_ID`, спочатку надішліть своєму боту `/start`, а потім виконайте:
+
+```powershell
+npm run chat-id
+```
+
+Скопіюйте показаний рядок `BOT_CHAT_ID=...` у `.env`.
+
 ```powershell
 npm run session
 ```
 
 Скопіюйте надрукований рядок `TG_SESSION=...` у `.env`. Це секрет із доступом до Telegram-акаунта — не комітьте й не надсилайте його іншим.
+
+Якщо код авторизації не надходить, використайте QR-вхід:
+
+```powershell
+npm run session:qr
+```
+
+У Telegram на телефоні відкрийте **Налаштування → Пристрої → Підключити пристрій** і відскануйте QR із PowerShell.
 
 ## Запуск
 
@@ -38,6 +54,33 @@ npm start
 ```
 
 Для автоматичного перезапуску на VPS рекомендовано systemd або Docker Compose. Фільтри й канали редагуються у `config/search.json`.
+
+### Зміна фільтрів через Telegram
+
+Налаштування застосовуються відразу та зберігаються у SQLite:
+
+```text
+/filters
+/budget 22000
+/rooms 1,2
+/district Шевченківський
+/strict on
+/status
+/help
+```
+
+Кілька районів можна передати через кому: `/district Шевченківський, Франківський`.
+
+Приховані адміністративні команди джерел (не показуються у звичайній `/help` і приймаються лише з `BOT_CHAT_ID`):
+
+```text
+/channelhelp
+/channels
+/channeladd @direct_rent
+/channelremove @direct_rent
+```
+
+`/channeladd` приймає також посилання виду `https://t.me/channel_name`. Підтримуються публічні username; для приватних invite-посилань потрібна окрема підтримка числових ID.
 
 ## Перевірки
 

@@ -12,8 +12,11 @@ const env = loadEnv();
 const config = loadSearchConfig();
 const log = pino({ level: env.LOG_LEVEL });
 const store = new Store(env.DATABASE_PATH);
+const savedFilters = store.loadFilters();
+if (savedFilters) config.filters = { ...config.filters, ...savedFilters };
+const savedChannels = store.loadChannels();
+if (savedChannels) config.channels = savedChannels;
 const bot = new TelegramBot(env.BOT_TOKEN, env.BOT_CHAT_ID);
-const allowed = new Set(config.channels.map((x) => x.toLowerCase()));
 const client = new TelegramClient(new StringSession(env.TG_SESSION), env.TG_API_ID, env.TG_API_HASH, {
   connectionRetries: 10, autoReconnect: true
 });
@@ -25,7 +28,7 @@ async function handle(event: any, edited: boolean): Promise<void> {
     if (!text) return;
     const chat = await message.getChat();
     const channel = String(chat?.username ?? "").replace(/^@/, "");
-    if (!channel || !allowed.has(channel.toLowerCase())) return;
+    if (!channel || !config.channels.some((item) => item.toLowerCase() === channel.toLowerCase())) return;
     const channelId = String(message.chatId ?? chat?.id ?? channel);
     const incoming: IncomingMessage = {
       channel, channelId, messageId: Number(message.id), text,
