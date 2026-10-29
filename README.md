@@ -9,6 +9,7 @@ Telegram-монітор на Node.js + TypeScript + teleproto + SQLite для о
 - [Архітектура і база даних](docs/ARCHITECTURE.md)
 - [Експлуатація та усунення проблем](docs/OPERATIONS.md)
 - [Безпека і секрети](docs/SECURITY.md)
+- [Кросплатформне розгортання: Docker, Windows, Linux, macOS](docs/DEPLOYMENT.md)
 - [Дослідження Telegram-джерел](CHANNEL_RESEARCH.md)
 
 ## Уже налаштовано
@@ -61,6 +62,14 @@ npm run session:qr
 ```powershell
 npm start
 ```
+
+Кросплатформний production-запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Контейнер не відкриває портів, зберігає SQLite у `./data` та автоматично перезапускається через `restart: unless-stopped`.
 
 Для автоматичного перезапуску на VPS рекомендовано systemd або Docker Compose. Фільтри й канали редагуються у `config/search.json`.
 
