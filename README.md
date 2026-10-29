@@ -2,6 +2,15 @@
 
 Telegram-монітор на Node.js + TypeScript + teleproto + SQLite для оренди 1–2-кімнатних квартир у Шевченківському районі Львова до 22 000 грн/міс.
 
+## Документація
+
+- [Встановлення і перший запуск](docs/SETUP.md)
+- [Команди бота та керування каналами](docs/COMMANDS.md)
+- [Архітектура і база даних](docs/ARCHITECTURE.md)
+- [Експлуатація та усунення проблем](docs/OPERATIONS.md)
+- [Безпека і секрети](docs/SECURITY.md)
+- [Дослідження Telegram-джерел](CHANNEL_RESEARCH.md)
+
 ## Уже налаштовано
 
 - Початкові джерела: `@orendakvartyr_ua`, `@direct_rent`, `@neruhomist_lviv_ua`, `@lvivrentua`, `@ValionEstateBot`, `@orenda_lvivprozoro`.
@@ -88,6 +97,10 @@ npm start
 npm test
 npm run typecheck
 ```
+
+## Ліміти Codex під час розробки
+
+У Codex CLI виконайте `/statusline` і ввімкніть `Rate limits`, `Token counters` та `Context stats`. Для разового перегляду використовуйте `/usage`, `/usage daily`, `/usage weekly`, `/usage cumulative` або `/status`.
 
 ## Важливі обмеження MVP
 
