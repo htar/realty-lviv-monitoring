@@ -9,6 +9,8 @@ import { TelegramBot } from "./bot.js";
 import { scanHistory } from "./history.js";
 import { acquireInstanceLock } from "./lock.js";
 import { startSiteMonitor } from "./site-monitor.js";
+import { deliverListing } from "./notify.js";
+import { startScheduler } from "./scheduler.js";
 import { dirname, join } from "node:path";
 import type { IncomingMessage } from "./types.js";
 
@@ -53,12 +55,12 @@ async function handle(event: any, edited: boolean): Promise<void> {
     };
     const listing = parseListing(text, config);
     const result = matchesSearch(listing, config);
-    const saved = store.save(incoming, listing, result.matches);
+    const saved = store.save(incoming, listing, result.matches, result.reasons);
     if (!saved.isNewVersion) return;
     log.info({ channel, messageId: message.id, matched: result.matches, reasons: result.reasons }, "message processed");
     if (result.matches) {
-      await bot.sendListing(incoming, listing);
-      store.markNotified(saved.key);
+      const delivery = await deliverListing({ store, bot, message: incoming, listing, key: saved.key });
+      if (delivery === "duplicate") log.info({ channel, messageId: message.id }, "duplicate of a recently sent listing, skipped");
     }
   } catch (error) {
     log.error({ err: error }, "message processing failed");
@@ -75,6 +77,8 @@ async function main(): Promise<void> {
   if (env.SITES_INTERVAL_MIN > 0) {
     stopSites = startSiteMonitor({ config, store, bot, logger: log }, env.SITES_INTERVAL_MIN * 60_000);
   }
+  stopScheduler = startScheduler({ store, send: (text) => bot.sendText(text), logger: log,
+    backupDir: join(dirname(env.DATABASE_PATH), "backups") });
   log.info({ channels: config.channels }, "Real Estate Radar started");
 }
 
@@ -82,6 +86,7 @@ async function main(): Promise<void> {
 const HEALTH_INTERVAL_MS = 5 * 60_000;
 let healthTimer: NodeJS.Timeout | undefined;
 let healthFailures = 0;
+let stopScheduler: (() => void) | undefined;
 function startHealthCheck(): void {
   healthTimer = setInterval(async () => {
     try {
@@ -101,6 +106,7 @@ async function shutdown(signal: string, code = 0): Promise<void> {
   log.info({ signal }, "shutting down");
   if (healthTimer) clearInterval(healthTimer);
   stopSites?.();
+  stopScheduler?.();
   bot.stop();
   await client.disconnect();
   store.close();

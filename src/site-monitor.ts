@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { matchesSearch } from "./parser.js";
+import { deliverListing } from "./notify.js";
 import { fetchRates, siteSearches, toListing, type Rates, type SiteListing } from "./sites.js";
 import type { Store } from "./database.js";
 import type { TelegramBot } from "./bot.js";
@@ -42,12 +43,11 @@ export async function pollSites({ config, store, bot, logger, fetchHtml = defaul
       const { incoming, listing } = toListing(card, config, rates);
       if (!Number.isFinite(listing.priceUah)) listing.priceUah = undefined;
       const result = matchesSearch(listing, config);
-      const saved = store.save(incoming, listing, result.matches);
+      const saved = store.save(incoming, listing, result.matches, result.reasons);
       if (!saved.isNewVersion || !result.matches) continue;
       try {
-        await bot.sendListing(incoming, listing);
-        store.markNotified(saved.key);
-        notified += 1;
+        const delivery = await deliverListing({ store, bot, message: incoming, listing, key: saved.key });
+        if (delivery === "sent") notified += 1;
       } catch (error) { logger.error({ err: error, source: search.source, id: card.id }, "site notification failed"); }
     }
   }

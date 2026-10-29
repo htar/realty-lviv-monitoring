@@ -4,6 +4,7 @@ import type { SearchConfig, IncomingMessage } from "./types.js";
 import type { Store } from "./database.js";
 import type { TelegramBot } from "./bot.js";
 import { parseListing, matchesSearch } from "./parser.js";
+import { deliverListing } from "./notify.js";
 import { DEFAULT_TIME_ZONE, dateInTimeZone, zonedMidnight, addCalendarDays } from "./time.js";
 
 export interface HistoryScanSummary {
@@ -57,7 +58,7 @@ export async function scanHistory(options: {
           edited: Boolean(telegramMessage.editDate) };
         const listing = parseListing(text, config);
         const result = matchesSearch(listing, config);
-        const saved = store.save(incoming, listing, result.matches);
+        const saved = store.save(incoming, listing, result.matches, result.reasons);
         if (!saved.isNewVersion) continue;
         summary.newVersions += 1;
         if (!result.matches) continue;
@@ -73,8 +74,8 @@ export async function scanHistory(options: {
 
   for (const pending of store.pendingNotifications()) {
     try {
-      await bot.sendListing(pending.message, pending.listing);
-      store.markNotified(pending.key);
+      const result = await deliverListing({ store, bot, message: pending.message, listing: pending.listing, key: pending.key });
+      if (result === "duplicate") continue;
       summary.notified += 1;
       summary.retriedPending += 1;
     } catch (error) {

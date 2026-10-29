@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseListing, matchesSearch } from "../src/parser.js";
+import { parseListing, matchesSearch, detectPhones } from "../src/parser.js";
+import { setRates, getRate, refreshRates } from "../src/rates.js";
 import type { SearchConfig } from "../src/types.js";
 
 const config: SearchConfig = {
@@ -70,7 +71,7 @@ test("detects a room property", () => {
 test("keeps unknown property type from matching", () => {
   const listing = parseListing("Оренда житла у Львові, Шевченківський район, 2 кімнати, 20000 грн", config);
   assert.equal(listing.propertyType, "unknown");
-  assert.match(matchesSearch(listing, config).reasons.join(" "), /не квартира/);
+  assert.match(matchesSearch(listing, config).reasons.join(" "), /не підходить тип житла/);
 });
 
 test("rejects missing city", () => {
@@ -80,19 +81,57 @@ test("rejects missing city", () => {
 
 test("rejects missing room count", () => {
   const listing = parseListing("Оренда квартири у Львові, Шевченківський район, 18000 грн", config);
-  assert.match(matchesSearch(listing, config).reasons.join(" "), /не 1–2 кімнати/);
+  assert.match(matchesSearch(listing, config).reasons.join(" "), /кімнат не 1\/2/);
 });
 
 test("rejects missing UAH price", () => {
   const listing = parseListing("Оренда 1-кімнатної квартири у Львові, Шевченківський район", config);
-  assert.match(matchesSearch(listing, config).reasons.join(" "), /ціну в гривнях/);
+  assert.match(matchesSearch(listing, config).reasons.join(" "), /не вдалося визначити ціну/);
 });
 
-test("recognizes USD but deliberately does not convert it", () => {
-  const listing = parseListing("Оренда 1-кімнатної квартири у Львові, Шевченківський район, $400", config);
-  assert.equal(listing.priceUah, undefined);
-  assert.equal(listing.currency, undefined);
-  assert.equal(matchesSearch(listing, config).matches, false);
+test("converts USD and EUR rent to UAH", () => {
+  setRates({ USD: 40, EUR: 45 });
+  const usd = parseListing("Оренда 1-кімнатної квартири у Львові, Шевченківський район, $400", config);
+  assert.equal(usd.priceUah, 16000);
+  assert.equal(usd.currency, "USD");
+  assert.equal(usd.originalPrice, 400);
+  assert.equal(matchesSearch(usd, config).matches, true);
+  const eur = parseListing("Оренда 2-кімнатної квартири у Львові, Шевченківський район, 600 євро", config);
+  assert.equal(eur.priceUah, 27000);
+  assert.match(matchesSearch(eur, config).reasons.join(" "), /понад 22\s000/);
+  assert.equal(parseListing("Оренда квартири у Львові, депозит $20000", config).priceUah, undefined);
+});
+
+test("reasons follow the current filters", () => {
+  const custom: SearchConfig = { ...config, filters: { ...config.filters, maxPriceUah: 15000, rooms: [3] } };
+  const reasons = matchesSearch(parseListing("Оренда 2-кімнатної квартири у Львові, Шевченківський район, 18000 грн", custom), custom).reasons.join(" ");
+  assert.match(reasons, /понад 15\s000/);
+  assert.match(reasons, /кімнат не 3/);
+});
+
+test("detects studios and three-room spelling", () => {
+  assert.equal(parseListing("Здам смарт-квартиру у Львові", config).rooms, 1);
+  assert.equal(parseListing("Оренда студії у Львові", config).propertyType, "apartment");
+  assert.equal(parseListing("Здається трикімнатна квартира", config).rooms, 3);
+});
+
+test("detects district by microdistrict alias", () => {
+  assert.equal(parseListing("Оренда квартири, Львів, вул. Замарстинівська", config).district, "Шевченківський");
+  const custom: SearchConfig = { ...config, filters: { ...config.filters, districtAliases: { "Шевченківський": ["рясне"] } } };
+  assert.equal(parseListing("Оренда квартири, Львів, Рясне-2", custom).district, "Шевченківський");
+});
+
+test("extracts phone numbers", () => {
+  assert.deepEqual(detectPhones("Тел: 067 123 45 67, +38 (050) 765-43-21, 0671234567"), ["+380671234567", "+380507654321"]);
+  assert.equal(parseListing("Оренда без телефону", config).phones, undefined);
+});
+
+test("applies keyword exclusions and broker hiding", () => {
+  const custom: SearchConfig = { ...config, filters: { ...config.filters, excludeKeywords: ["подобово", " "], hideBrokers: true } };
+  const listing = parseListing("Оренда 1-кімнатної квартири у Львові, Шевченківський район, 18000 грн, подобово, комісія 50%", custom);
+  const reasons = matchesSearch(listing, custom).reasons.join(" ");
+  assert.match(reasons, /виключене слово «подобово»/);
+  assert.match(reasons, /посередник/);
 });
 
 test("detects broker or commission language", () => {
@@ -133,4 +172,15 @@ test("rejects additional demand formulations", () => {
     assert.equal(listing.isDemandPost, true, text);
     assert.equal(matchesSearch(listing, config).matches, false, text);
   }
+});
+
+test("refreshes NBU rates and ignores failures", async () => {
+  const ok = async () => new Response(JSON.stringify([{ cc: "USD", rate: 42 }, { cc: "EUR", rate: 49 }]));
+  assert.equal(await refreshRates(ok as typeof fetch), true);
+  assert.equal(getRate("USD"), 42);
+  assert.equal(getRate("EUR"), 49);
+  assert.equal(await refreshRates((async () => new Response("", { status: 500 })) as typeof fetch), false);
+  assert.equal(await refreshRates((async () => { throw new Error("offline"); }) as typeof fetch), false);
+  setRates({ USD: -1 });
+  assert.equal(getRate("USD"), 42);
 });

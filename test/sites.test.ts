@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRealEstateLviv, parseRieltor, toListing } from "../src/sites.js";
-import { pollSites } from "../src/site-monitor.js";
+import { pollSites, startSiteMonitor } from "../src/site-monitor.js";
 import { matchesSearch } from "../src/parser.js";
 import { Store } from "../src/database.js";
 import type { SearchConfig } from "../src/types.js";
@@ -76,4 +76,96 @@ test("pollSites notifies once per listing and survives a failing site", async ()
   assert.deepEqual(await pollSites(deps as any), { seen: 2, notified: 0 });
   assert.deepEqual(sent, ["https://rieltor.ua/lvov/flats-rent/view/7/"]);
   store.close();
+});
+
+test("pollSites handles missing rates, empty pages and send failures", async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "sites-")), "db.sqlite"));
+  const warnings: string[] = [];
+  const errors: string[] = [];
+  const deps = {
+    config, store,
+    bot: { sendListing: async () => { throw new Error("Bot API down"); } },
+    logger: { info() {}, warn(_o: unknown, msg: string) { warnings.push(msg); }, error(_o: unknown, msg: string) { errors.push(msg); } },
+    getRates: async () => { throw new Error("NBU down"); },
+    fetchHtml: async (url: string) => url.includes("rieltor")
+      ? rieltorCard("9", "18 000 грн", "Львів , Шевченківський р-н", 2) + rieltorCard("10", "400 $", "Львів , Шевченківський р-н")
+      : "<html></html>"
+  };
+  assert.deepEqual(await pollSites(deps as any), { seen: 2, notified: 0 });
+  assert.ok(warnings.some((w) => /NBU rates unavailable/.test(w)));
+  assert.ok(warnings.some((w) => /0 listings/.test(w)));
+  assert.deepEqual(errors, ["site notification failed"]);
+  store.close();
+});
+
+test("startSiteMonitor polls immediately and can be stopped", async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "sites-")), "db.sqlite"));
+  let fetches = 0;
+  const stop = startSiteMonitor({ config, store, bot: { sendListing: async () => {} },
+    logger: { info() {}, warn() {}, error() {} }, getRates: async () => rates,
+    fetchHtml: async () => { fetches += 1; return ""; } } as any, 10_000);
+  await new Promise((r) => setTimeout(r, 50));
+  stop();
+  assert.ok(fetches >= 1);
+  store.close();
+});
+
+test("pollSites uses the default HTTP fetcher with browser headers", async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), "sites-")), "db.sqlite"));
+  const original = globalThis.fetch;
+  const agents: string[] = [];
+  const errors: string[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    agents.push(String((init.headers as Record<string, string>)["User-Agent"]));
+    return String(url).includes("rieltor") ? new Response(rieltorCard("11", "18 000 грн", "Львів , Шевченківський р-н", 2))
+      : new Response("blocked", { status: 403 });
+  }) as typeof fetch;
+  try {
+    const result = await pollSites({ config, store, bot: { sendListing: async () => {} }, getRates: async () => rates,
+      logger: { info() {}, warn() {}, error(_o: unknown, msg: string) { errors.push(msg); } } } as any);
+    assert.deepEqual(result, { seen: 1, notified: 1 });
+    assert.ok(agents.every((a) => a.startsWith("Mozilla/5.0")));
+    assert.deepEqual(errors, ["site scrape failed"]);
+  } finally {
+    globalThis.fetch = original;
+    store.close();
+  }
+});
+
+test("parsers skip incomplete cards and handle sparse ones", () => {
+  const sparse = `<div data-jss="catalog-item" data-catalog-item-id="20">
+    <a class="catalog-card-media" href="https://rieltor.ua/x/20/"></a>
+    <div class="catalog-card-price-title">700 €</div>
+    <div class="catalog-card-details-row">2 кімнати</div></div>`;
+  const noPrice = `<div data-jss="catalog-item" data-catalog-item-id="21">
+    <a class="catalog-card-media" href="https://rieltor.ua/x/21/"></a>
+    <div class="catalog-card-details-row">2 кімнати</div></div>`;
+  const noId = `<div data-jss="catalog-item"><div class="catalog-card-price-title">9 000 грн</div></div>`;
+  const cards = parseRieltor(sparse + noPrice + noId);
+  assert.equal(cards.length, 1);
+  assert.deepEqual([cards[0]?.currency, cards[0]?.city, cards[0]?.district, cards[0]?.address, cards[0]?.area],
+    ["EUR", "Львів", null, "Львів", null]);
+
+  const lviv = (inner: string, href = "/30-kvartyra") => `<div class="row"><a class="photo-obj-search-page" href="${href}"></a>${inner}</div>`;
+  const html = `<div class="col-dense-right">${[
+    lviv(`<div class="object-listing-price">600 €</div><div class="object-listing-price">1 кімн. 30 кв.м</div>
+      <div class="object-listing-address">Шевченківський район</div>`),
+    lviv(`<div class="object-listing-price">ціна договірна</div>`, "/31-kvartyra"),
+    lviv(`<div class="object-listing-price">9 000 грн</div>`, "/bad-link"),
+    `<div class="row"><a class="photo-obj-search-page"></a></div>`
+  ].join("")}</div>`;
+  const parsed = parseRealEstateLviv(html);
+  assert.equal(parsed.length, 1);
+  assert.deepEqual([parsed[0]?.currency, parsed[0]?.district, parsed[0]?.city, parsed[0]?.title],
+    ["EUR", "Шевченківський", "Львів", "Оренда, Львів"]);
+});
+
+test("real-estate.lviv.ua card without district keeps the settlement as city", () => {
+  const html = `<div class="col-dense-right"><div class="row"><a class="photo-obj-search-page" href="/77-kvartyra"></a>
+    <div class="object-listing-price">500 $</div><div class="object-listing-price">2 кімн. 50 кв.м</div>
+    <div class="object-listing-address">Шевченка вул., с. Зимна Вода</div></div></div>`;
+  const [card] = parseRealEstateLviv(html);
+  assert.equal(card?.district, null);
+  assert.equal(card?.currency, "USD");
+  assert.equal(card?.floor, null);
 });

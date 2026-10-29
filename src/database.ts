@@ -33,18 +33,103 @@ export class Store {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS sent_fingerprints (
+        fingerprint TEXT PRIMARY KEY,
+        sent_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS favorites (
+        channel_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (channel_id, message_id)
+      );
     `);
+    const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "reasons_json")) {
+      this.db.exec("ALTER TABLE messages ADD COLUMN reasons_json TEXT");
+    }
   }
 
-  save(message: IncomingMessage, listing: Listing, matched: boolean): { isNewVersion: boolean; key: string } {
+  save(message: IncomingMessage, listing: Listing, matched: boolean, reasons: string[] = []): { isNewVersion: boolean; key: string } {
     const hash = createHash("sha256").update(message.text).digest("hex");
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO messages
-      (channel_id, message_id, content_hash, channel, text, link, published_at, edited, matched, parsed_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (channel_id, message_id, content_hash, channel, text, link, published_at, edited, matched, parsed_json, reasons_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(message.channelId, message.messageId, hash, message.channel, message.text, message.link,
-      message.date.toISOString(), Number(message.edited), Number(matched), JSON.stringify(listing));
+      message.date.toISOString(), Number(message.edited), Number(matched), JSON.stringify(listing), JSON.stringify(reasons));
     return { isNewVersion: result.changes === 1, key: `${message.channelId}:${message.messageId}:${hash}` };
+  }
+
+  /** UAH price of the most recent earlier version of the same post, if it had one. */
+  previousPrice(channelId: string, messageId: number, currentKey: string): number | undefined {
+    const hash = currentKey.split(":")[2];
+    const rows = this.db.prepare(`SELECT parsed_json FROM messages WHERE channel_id = ? AND message_id = ? AND content_hash != ?
+      ORDER BY rowid DESC LIMIT 1`).all(channelId, messageId, hash) as Array<{ parsed_json: string }>;
+    try { return rows[0] ? (JSON.parse(rows[0].parsed_json) as Listing).priceUah : undefined; }
+    catch { return undefined; }
+  }
+
+  /** True when the same listing (by fingerprint) was already sent within the window. */
+  wasSentRecently(fingerprint: string, days = 7, now = new Date()): boolean {
+    const since = new Date(now.getTime() - days * 86_400_000).toISOString();
+    return Boolean(this.db.prepare("SELECT 1 FROM sent_fingerprints WHERE fingerprint = ? AND sent_at >= ?").get(fingerprint, since));
+  }
+
+  rememberSent(fingerprint: string, now = new Date()): void {
+    this.db.prepare(`INSERT INTO sent_fingerprints (fingerprint, sent_at) VALUES (?, ?)
+      ON CONFLICT(fingerprint) DO UPDATE SET sent_at = excluded.sent_at`).run(fingerprint, now.toISOString());
+  }
+
+  addFavorite(channelId: string, messageId: number): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO favorites (channel_id, message_id, created_at) VALUES (?, ?, ?)")
+      .run(channelId, messageId, new Date().toISOString()).changes === 1;
+  }
+
+  removeFavorite(channelId: string, messageId: number): boolean {
+    return this.db.prepare("DELETE FROM favorites WHERE channel_id = ? AND message_id = ?").run(channelId, messageId).changes === 1;
+  }
+
+  favorites(limit = 30): Array<{ channelId: string; messageId: number; link: string; listing: Listing }> {
+    const rows = this.db.prepare(`SELECT f.channel_id, f.message_id,
+        (SELECT link FROM messages m WHERE m.channel_id = f.channel_id AND m.message_id = f.message_id ORDER BY rowid DESC LIMIT 1) link,
+        (SELECT parsed_json FROM messages m WHERE m.channel_id = f.channel_id AND m.message_id = f.message_id ORDER BY rowid DESC LIMIT 1) parsed_json
+      FROM favorites f ORDER BY f.created_at DESC LIMIT ?`).all(limit) as Array<any>;
+    return rows.filter((row) => row.link).map((row) => ({ channelId: row.channel_id, messageId: row.message_id,
+      link: row.link, listing: JSON.parse(row.parsed_json) as Listing }));
+  }
+
+  /** Most common rejection reasons since the given date. */
+  topReasons(since: Date, limit = 10): Array<{ reason: string; count: number }> {
+    return this.db.prepare(`SELECT j.value reason, COUNT(*) count FROM messages, json_each(messages.reasons_json) j
+      WHERE messages.reasons_json IS NOT NULL AND published_at >= ? GROUP BY j.value ORDER BY count DESC LIMIT ?`)
+      .all(since.toISOString(), limit) as Array<{ reason: string; count: number }>;
+  }
+
+  /** Activity summary since the given date, for the daily digest. */
+  summarySince(since: Date): { processed: number; matched: number; notified: number; avgMatchedPrice?: number } {
+    const row = this.db.prepare(`SELECT COUNT(*) processed, COALESCE(SUM(matched), 0) matched,
+        SUM(CASE WHEN notified_at IS NOT NULL THEN 1 ELSE 0 END) notified,
+        AVG(CASE WHEN matched = 1 THEN json_extract(parsed_json, '$.priceUah') END) avg
+      FROM messages WHERE published_at >= ?`).get(since.toISOString()) as any;
+    return { processed: row.processed, matched: row.matched, notified: row.notified ?? 0,
+      ...(row.avg ? { avgMatchedPrice: Math.round(row.avg) } : {}) };
+  }
+
+  getSetting(key: string): string | undefined {
+    return (this.db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db.prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`)
+      .run(key, value, new Date().toISOString());
+  }
+
+  /** Writes a consistent copy of the database to the given file. */
+  async backup(destination: string): Promise<void> {
+    mkdirSync(dirname(resolve(destination)), { recursive: true });
+    await this.db.backup(resolve(destination));
   }
 
   markNotified(key: string): void {

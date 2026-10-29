@@ -11,6 +11,12 @@ export interface SearchConfig {
     rooms: number[];
     maxPriceUah: number;
     requireExplicitDistrict: boolean;
+    /** Listings containing any of these words are rejected. */
+    excludeKeywords?: string[];
+    /** Reject likely broker/commission listings instead of only flagging them. */
+    hideBrokers?: boolean;
+    /** Extra words (microdistricts, streets) that identify a district, keyed by district name. */
+    districtAliases?: Record<string, string[]>;
   };
 }
 
@@ -22,6 +28,9 @@ export interface Listing {
   rooms?: number;
   priceUah?: number;
   currency?: "UAH" | "USD" | "EUR";
+  /** Price as written when it was not in UAH, e.g. 450 (USD). */
+  originalPrice?: number;
+  phones?: string[];
   isLikelyBroker: boolean;
   isDemandPost: boolean;
   text: string;

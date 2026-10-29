@@ -87,7 +87,7 @@ export function parseRealEstateLviv(html: string): SiteListing[] {
     let city = "Львів", district: string | null = null;
     if (dIdx !== -1) {
       district = /([А-ЯІЇЄҐ][а-яіїєґ'-]+)\s+район$/.exec(parts[dIdx] ?? "")?.[1] ?? null;
-      city = (dIdx > 0 ? parts[dIdx - 1] : parts[0]) ?? city;
+      if (dIdx > 0) city = parts[dIdx - 1] ?? city;
     } else city = parts[parts.length - 1] ?? city;
     city = stripSettlementPrefix(city);
     const address = parts.filter((p, i) => i !== dIdx && p !== city).join(", ") || city;

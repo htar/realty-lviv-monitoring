@@ -24,7 +24,10 @@ const searchSchema = z.object({
     districts: z.array(z.string()),
     rooms: z.array(z.number().int().positive()),
     maxPriceUah: z.number().positive(),
-    requireExplicitDistrict: z.boolean().default(true)
+    requireExplicitDistrict: z.boolean().default(true),
+    excludeKeywords: z.array(z.string()).default([]),
+    hideBrokers: z.boolean().default(false),
+    districtAliases: z.record(z.string(), z.array(z.string())).optional()
   })
 });
 
