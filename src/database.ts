@@ -200,11 +200,13 @@ export class Store {
       .run(retry, next, error instanceof Error ? error.message : String(error), channelId, Number(messageId), hash);
   }
 
-  pendingNotifications(limit = 500): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
+  pendingNotifications(limit = 500, protectFreshSeconds = 0): Array<{ key: string; message: IncomingMessage; listing: Listing }> {
+    const freshCutoff = new Date(Date.now() - protectFreshSeconds * 1000).toISOString();
     const rows = this.db.prepare(`SELECT channel_id, message_id, content_hash, channel, text, link,
       published_at, edited, parsed_json FROM messages
       WHERE matched = 1 AND notified_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-      ORDER BY published_at ASC LIMIT ?`).all(new Date().toISOString(), limit) as Array<any>;
+      AND (retry_count > 0 OR published_at <= ?)
+      ORDER BY published_at ASC LIMIT ?`).all(new Date().toISOString(), freshCutoff, limit) as Array<any>;
     const pending: Array<{ key: string; message: IncomingMessage; listing: Listing }> = [];
     for (const row of rows) {
       try {

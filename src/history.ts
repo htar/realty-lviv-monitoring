@@ -21,12 +21,12 @@ export interface HistoryScanSummary {
 }
 
 export async function flushPendingNotifications(options: {
-  store: Store; bot: TelegramBot; logger?: Logger; now?: Date;
+  store: Store; bot: TelegramBot; logger?: Logger; now?: Date; protectFreshSeconds?: number;
 }): Promise<{ notified: number; failed: number }> {
-  const { store, bot, logger, now = new Date() } = options;
+  const { store, bot, logger, now = new Date(), protectFreshSeconds = 0 } = options;
   let notified = 0;
   let failed = 0;
-  for (const pending of store.pendingNotifications()) {
+  for (const pending of store.pendingNotifications(500, protectFreshSeconds)) {
     try {
       const result = await deliverListing({ store, bot, message: pending.message, listing: pending.listing, key: pending.key });
       if (result !== "duplicate") notified += 1;

@@ -66,6 +66,7 @@ test("marks a saved version as notified", () => {
     const saved = store.save(message(), listing(), true);
     assert.equal(store.hasVersion(message()), true);
     assert.equal(store.hasVersion({ ...message(), messageId: 2 }), false);
+    assert.equal(store.pendingNotifications(500, 60).length, 1); // fixture is historical, so it is safe to retry
     store.markNotified(saved.key);
     assert.deepEqual(store.stats(), { processed: 1, matched: 1, notified: 1 });
     store.close();

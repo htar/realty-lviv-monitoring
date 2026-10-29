@@ -116,7 +116,8 @@ async function main(): Promise<void> {
     }).catch((error) => log.warn({ err: error }, "scheduled recovery failed"));
   }, env.RESCAN_INTERVAL_HOURS * 3_600_000);
   queueTimer = setInterval(() => {
-    void flushPendingNotifications({ store, bot, logger: log }).then((result) => {
+    if (recoveryRunning) return;
+    void flushPendingNotifications({ store, bot, logger: log, protectFreshSeconds: 60 }).then((result) => {
       if (result.notified) log.info(result, "pending delivery queue flushed");
     });
   }, 10_000);
