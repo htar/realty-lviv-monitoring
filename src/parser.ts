@@ -12,6 +12,7 @@ const APARTMENT = /(квартир\p{L}*|апартамент\p{L}*)/iu;
 const HOUSE = /(будинок|будинку|будинк\p{L}*|дом|котедж\p{L}*)/iu;
 const ROOM = /(кімнат\p{L}*|комнат\p{L}*)/iu;
 const BROKER = /(рієлтор|риелтор|агентств\p{L}*|комісі[яї]|комисси[яи]|посередник)/iu;
+const DEMAND_POST = /(?:шукаю|шукаємо|шукає|потрібна|потрібне|потрібен|зніму|ищу|ищем|ищет|нужна|нужно|нужен|сниму)(?:\s+[^\s,.!?]+){0,4}\s+(?:квартир\p{L}*|житл\p{L}*|кімнат\p{L}*|комнат\p{L}*|будинок|дом)/iu;
 
 function detectRooms(text: string): number | undefined {
   const patterns = [
@@ -63,6 +64,7 @@ export function parseListing(rawText: string, config: SearchConfig): Listing {
     rooms: detectRooms(text),
     ...detectPrice(text),
     isLikelyBroker: BROKER.test(text),
+    isDemandPost: DEMAND_POST.test(text),
     text: rawText.trim()
   };
 }
@@ -71,6 +73,7 @@ export interface MatchResult { matches: boolean; reasons: string[] }
 
 export function matchesSearch(listing: Listing, config: SearchConfig): MatchResult {
   const reasons: string[] = [];
+  if (listing.isDemandPost) reasons.push("це запит на пошук житла, а не пропозиція");
   if (listing.dealType !== "rent") reasons.push("не визначено довгострокову оренду");
   if (!config.filters.propertyTypes.includes(listing.propertyType)) reasons.push("не квартира");
   if (listing.city !== config.filters.city) reasons.push("не вказано Львів");

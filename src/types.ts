@@ -23,6 +23,7 @@ export interface Listing {
   priceUah?: number;
   currency?: "UAH" | "USD" | "EUR";
   isLikelyBroker: boolean;
+  isDemandPost: boolean;
   text: string;
 }
 
