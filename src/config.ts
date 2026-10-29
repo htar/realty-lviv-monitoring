@@ -10,7 +10,9 @@ const envSchema = z.object({
   BOT_TOKEN: z.string().min(1),
   BOT_CHAT_ID: z.string().min(1),
   DATABASE_PATH: z.string().default("./data/realty.sqlite"),
-  LOG_LEVEL: z.string().default("info")
+  LOG_LEVEL: z.string().default("info"),
+  // How often to poll listing sites (rieltor.ua, real-estate.lviv.ua); 0 disables them.
+  SITES_INTERVAL_MIN: z.coerce.number().min(0).default(15)
 });
 
 const searchSchema = z.object({

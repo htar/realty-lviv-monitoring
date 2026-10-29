@@ -8,6 +8,7 @@ import { Store } from "./database.js";
 import { TelegramBot } from "./bot.js";
 import { scanHistory } from "./history.js";
 import { acquireInstanceLock } from "./lock.js";
+import { startSiteMonitor } from "./site-monitor.js";
 import { dirname, join } from "node:path";
 import type { IncomingMessage } from "./types.js";
 
@@ -15,6 +16,7 @@ const env = loadEnv();
 const config = loadSearchConfig();
 const log = createLogger(env.LOG_LEVEL);
 let releaseLock: () => void;
+let stopSites: (() => void) | undefined;
 try {
   releaseLock = acquireInstanceLock(join(dirname(env.DATABASE_PATH), "radar.lock"));
 } catch (error) {
@@ -70,6 +72,9 @@ async function main(): Promise<void> {
   client.addEventHandler((event) => void handle(event, true), new EditedMessage({}));
   void bot.runCommands(store, config);
   startHealthCheck();
+  if (env.SITES_INTERVAL_MIN > 0) {
+    stopSites = startSiteMonitor({ config, store, bot, logger: log }, env.SITES_INTERVAL_MIN * 60_000);
+  }
   log.info({ channels: config.channels }, "Real Estate Radar started");
 }
 
@@ -95,6 +100,7 @@ function startHealthCheck(): void {
 async function shutdown(signal: string, code = 0): Promise<void> {
   log.info({ signal }, "shutting down");
   if (healthTimer) clearInterval(healthTimer);
+  stopSites?.();
   bot.stop();
   await client.disconnect();
   store.close();

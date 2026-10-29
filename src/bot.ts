@@ -27,7 +27,7 @@ export class TelegramBot {
     const excerpt = escapeHtml(message.text.slice(0, 750));
     await this.call("sendMessage", {
       chat_id: this.chatId, parse_mode: "HTML", disable_web_page_preview: false,
-      text: `🏠 <b>Нова відповідна квартира</b>\n\n<b>${listing.rooms}-кімнатна · ${escapeHtml(listing.district ?? "Львів")}</b>\n💰 <b>${price} грн/міс.</b>\n📣 @${escapeHtml(message.channel)}${listing.isLikelyBroker ? "\n⚠️ Ймовірно посередник/комісія" : ""}\n\n${excerpt}\n\n<a href="${message.link}">Відкрити оригінал</a>`
+      text: `🏠 <b>Нова відповідна квартира</b>\n\n<b>${listing.rooms}-кімнатна · ${escapeHtml(listing.district ?? "Львів")}</b>\n💰 <b>${price} грн/міс.</b>\n${message.channelId.startsWith("site:") ? `🌐 ${escapeHtml(message.channel)}` : `📣 @${escapeHtml(message.channel)}`}${listing.isLikelyBroker ? "\n⚠️ Ймовірно посередник/комісія" : ""}\n\n${excerpt}\n\n<a href="${message.link}">Відкрити оригінал</a>`
     });
   }
 
