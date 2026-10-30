@@ -89,6 +89,16 @@ Unregister-ScheduledTask -TaskName realty-monitoring -Confirm:$false   # вид�
 Get-Content logs\bot.log -Tail 50 -Wait   # стежити в реальному часі
 ```
 
+Перевірити, що бот працює:
+
+```powershell
+(Get-ScheduledTask realty-monitoring).State    # Running = працює, Ready = зупинено
+Get-ScheduledTaskInfo realty-monitoring        # LastRunTime, LastTaskResult
+Get-CimInstance Win32_Process -Filter "name='node.exe'" | Where-Object CommandLine -match 'realty-monitoring'
+```
+
+Якщо стан `Ready`, а процесу немає, завдання зупинилося: у логу не буде помилки, а `LastTaskResult` дорівнюватиме `3221225786` (`0xC000013A`, процес закрили ззовні). Завдання працює в межах вашого сеансу Windows (`LogonType Interactive`): при виході із сеансу (log off) воно завершується, а при наступному вході стартує знову (тригер At log on). Щоб воно працювало й без входу, потрібне завдання з тригером At startup і запуском від облікового запису з паролем (потребує прав адміністратора).
+
 Не запускайте `npm start` вручну, поки завдання працює: два процеси з однією SQLite-базою та одним токеном конфліктують. Спершу `Stop-ScheduledTask`.
 
 ## Linux без Docker

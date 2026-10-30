@@ -124,6 +124,6 @@ SQLite settings перекривають `config/search.json`. Тому реда
 
 - Одночасно може працювати лише один екземпляр: під час старту створюється `data/radar.lock` з PID. Другий запуск одразу завершиться з повідомленням, який процес зупинити (`taskkill /PID <pid> /T /F`). Якщо бачите `409 Conflict` у логах — десь ще працює бот з тим самим `BOT_TOKEN` (інший ПК, Docker).
 - У Git Bash повернення до `$` не означає, що процес зупинено — перевіряйте `tasklist | grep node`.
-- Для постійної роботи на Windows: `npm i -g pm2`, `pm2 start ecosystem.config.cjs`, логи — `pm2 logs realty-monitoring`, зупинка — `pm2 stop realty-monitoring`. Або `docker compose up -d`.
+- Для постійної роботи на Windows рекомендовано завдання Task Scheduler `realty-monitoring` (реєстрація, керування й логи — у [DEPLOYMENT.md](DEPLOYMENT.md#windows-без-docker)); логи — `logs\bot.log`, зупинка — `Stop-ScheduledTask -TaskName realty-monitoring`. Альтернативи: `npm i -g pm2`, `pm2 start ecosystem.config.cjs` (логи — `pm2 logs realty-monitoring`, зупинка — `pm2 stop realty-monitoring`) або `docker compose up -d`. Не поєднуйте способи: за наявності `data/radar.lock` другий екземпляр одразу завершиться.
 - Кожні 5 хвилин бот перевіряє зʼєднання з Telegram (`getMe`). Після трьох невдач поспіль процес завершується з кодом 1, щоб pm2/Docker його перезапустили.
 - `LOG_FORMAT=json` вимикає кольорові логи в терміналі.

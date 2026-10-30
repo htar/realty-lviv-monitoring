@@ -72,7 +72,7 @@ docker compose up -d --build
 
 Контейнер не відкриває портів, зберігає SQLite у `./data` та автоматично перезапускається через `restart: unless-stopped`.
 
-Для автоматичного перезапуску на VPS рекомендовано systemd або Docker Compose. Фільтри й канали редагуються у `config/search.json`.
+Для автозапуску на Windows при вході в систему використовуйте Планувальник завдань (Task Scheduler): готовий приклад, керування, логи й перевірка стану — у [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#windows-без-docker). Для автоматичного перезапуску на VPS рекомендовано systemd або Docker Compose. Фільтри й канали редагуються у `config/search.json`.
 
 ### Зміна фільтрів через Telegram
 
